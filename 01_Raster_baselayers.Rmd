@@ -1,0 +1,567 @@
+---
+title: "Raster Baselayer Generation "
+author:  "Gen Perkins"
+script author: "Gen Perkins"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Once the LiDAR processing and vector baselayers have been generated there are some additional outputs including preparing the base dem rasters and generating bgc raster
+
+
+```{r packages, include=FALSE}
+#install.packages("plyr")
+
+library(plyr)
+library(sf)
+library(dplyr)
+library(raster)
+library(stars)
+library(fasterize)
+#install.packages("devtools")
+#devtools::install_github("ColinChisholm/pemgeneratr")
+#library("pemgeneratr")
+
+
+```
+
+
+## Work-flow
+
+This script relies on having a spatial file (AOI.gpkg) defining the study area (area of interest - AOI). Firstly the area of interest is defined along with input and output folders. 
+
+1) generate template raster for multiple scales
+2) generate base DEM Layer from 
+ - lidar processing (1m)
+ - trim (25)
+ 
+3) output dem raster at multiple scales 
+4) 
+
+
+
+```{r Parameters}
+#AOI <- "DateCreek"
+#AOI <- "Baboon"
+#AOI <- "PeterHope"
+#AOI <- "OldFort"
+#AOI <- "Buck"
+AOI <- "Deception"
+#AOI <- "BoundaryTSA"
+#AOI <- "Wetzinkwa"
+#AOI <- "EagleHills"
+
+
+AOI_dir <- file.path(paste0(AOI, "_AOI"))
+cov_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+shape_dir <- file.path(AOI_dir, "0_raw_inputs", "base_layers")
+dem_dir <- file.path(AOI_dir, "0_raw_inputs", "dem")
+trim_dir <- file.path(AOI_dir, "0_raw_inputs", "dem", "trim")
+bcdata_dir <- file.path("_data_allBC")
+source("./_functions/aoi_snap.R")
+source("./_functions/multi_res.R")
+
+```
+
+
+
+# 1) create a raster templates for AOI at different scales
+
+```{r}
+
+# read in the aoi
+aoi <- st_read(file.path(shape_dir, "aoi_snapped.gpkg")) %>%
+  mutate(id = 1)
+
+# create a set of template rasters based on various cell resolution
+
+res <- c(5, 25) # set to 1m and 25m # set to 1m and 25m
+
+for (re in res){
+  re = 5
+
+  r_dir <- file.path(cov_dir, paste0(re,"m"))
+  
+  if (!dir.exists(r_dir)){
+  dir.create(r_dir)
+    
+  } else {
+      
+    print("Directory already exists!")
+  }
+  
+  if (file.exists(file.path(r_dir, "template.tif"))){
+    
+    print("template for this resolution already exists!")
+  
+    } else {
+  
+  rtemp <- raster(aoi, res = re)
+  r_out <- fasterize(aoi, rtemp, field = "id")
+  
+  writeRaster(r_out, file.path(r_dir, "template.tif"))
+    }
+}
+
+```
+
+
+# 2) Generate base DEM Layer from lidar processing to match template rasters. 
+
+```{r}
+
+# generate a 1m DEM from Lidar or 25m from TRIM base DEM 
+# note if lidar is unavailable use other metrics TRIM, CDED
+  res <- 1
+  dem_file <- file.path(dem_dir, "lidar", "1m_DTM_mosaic.tif")
+  rtemplate <- raster(file.path(cov_dir, paste0(res,"m"), "template.tif"))
+  dem <- raster(dem_file)
+  crs(dem) <- crs(rtemplate)
+  dem <- crop(dem, rtemplate)
+  writeRaster(dem, file.path(cov_dir, paste0(res,"m"), "dem.tif"), overwrite = T)
+
+  
+  # Generate base raster for Boundary 
+  
+#  res <- 2.5
+#  dem_file <- file.path(dem_dir, "lidar", "Boundary_250cm_BEM_GQ201907300940_TSA.tif")
+#  rtemplate <- raster(file.path(cov_dir, paste0(res,"m"), "template.tif"))
+#  dem <- raster(dem_file)
+#  crs(dem) <- crs(rtemplate)
+#  dem <- crop(dem, rtemplate)
+#  writeRaster(dem, file.path(cov_dir, paste0(res,"m"), "dem.tif"))
+
+#in_aoi <- aoi
+  
+
+```
+
+
+# Generate multiple resolution dems
+
+Once the 1m dem is correctly cropped to the aoi, we can generate base dems at various resolutions. For sample planning we use 25m.
+
+```{r}
+# read in 1m base raster as needed
+dem <- raster(file.path(cov_dir, paste0("1m"), "dem.tif"))
+#dem <- raster(file.path(cov_dir, paste0("2.5m"), "dem.tif"))
+
+## Generate alternate coarser grain resolutions of the input
+multi_res(dem, output = cov_dir, resolution = c(5)) 
+
+# confirms same extent
+l <- list.files(cov_dir, pattern = "*.tif", recursive = TRUE, full.names = TRUE)
+#l <- l[613:614]
+
+for(i in l){
+c <- raster(i) ;   print(i) ;  print("Resolution") ;  print(res(c)) ; print(as.vector(extent(c)))
+  
+}
+
+
+###################################################################################
+# tempory fix for the Deception data set: 
+
+# read in 1m base raster as needed
+res = 5
+dem <- raster(file.path(cov_dir, paste0("5m"), "dem.tif"))
+rtemplate <- raster(file.path(cov_dir, paste0(res,"m"), "aspect.tif"))
+
+#folders <- "height_percentiles"
+#folders <- "height_metrics"
+folders <- "bincentiles"
+folders <- "canopy_cover"
+  
+#ftc <- list.files(file.path(dem_dir, "lidar","lasmetrics_5m","vci"), full.names = T)
+ftc <- list.files(file.path(dem_dir, "lidar","lasmetrics_5m",folders), full.names = T)
+ftc <- list.files(file.path(dem_dir, "lidar"), full.names = T)
+
+
+#dem <- raster(file.path(dem_dir, "lidar","lasmetrics_5m","vci", "vc1_mosaic.tif"))
+# p90_mosaic, and cov_gap_mosaic
+
+for(i in ftc) {
+  i = ftc[4]
+  fname = gsub(".tif", "_rproj.tif",basename(i))
+  print(fname)
+  ff <- raster(i)
+  crs(ff) <- crs(rtemplate)
+
+  #stack(ff, rtemplate)
+  
+  # Use the expanded aoi to create a wider AOI raster
+  #extent(rtemplate)
+
+  dem_reproj <- crop(ff, rtemplate)
+  dem_aoi_prj <- projectRaster(dem_reproj, rtemplate, method = 'bilinear')
+
+  writeRaster(dem_aoi_prj, file.path(dem_dir, "lidar","lasmetrics_5m", folders, fname), format = "GTiff", overwrite = TRUE)
+  
+  #stack(dem_aoi_prj, rtemplate)
+}
+
+# confirms same extent
+l <- list.files(file.path(cov_dir,"5m"), pattern = "*.tif", recursive = TRUE, full.names = TRUE)
+l <- l[499:520]
+
+for(i in l){
+c <- raster(i) ;   print(i) ;  print("Resolution") ;  print(res(c)) ; print(as.vector(extent(c)))
+  
+}
+
+stack(l)
+
+##################################################################################
+
+```
+
+
+## Generate BGC Rasters 
+
+Note in this case the bgc layer on the BCGW is not the latest available so we use an updated version. 
+This script causes problems with larger raster sets (5m Boundary will not automatically convert as stars creates a proxy object due to the size of the data)
+
+```{r}
+res <- c(5, 10, 25) # set to 1m and 25m
+res <- 5
+
+for (re in res) {
+  #bec_name <- "dc_becV12_2.gpkg"
+  bec_name <- "bec.gpkg"
+  
+# select the bec shapefile and check format
+
+  bec_sf <- st_read(file.path(shape_dir, bec_name))
+  bec_sf <- st_cast(bec_sf, "MULTIPOLYGON") %>%
+   mutate(BGC_LABEL = gsub(" ","", BGC_LABEL)) %>%
+   mutate(BGC_no = seq(1, length(bec_sf$BGC_LABEL),1))
+  
+# select resolution of raster 
+  rtemplate <- stars::read_stars(file.path(cov_dir, paste0(re,"m"), "template.tif"), proxy = FALSE)
+
+  out <- stars::st_rasterize(bec_sf["BGC_LABEL"],
+                           template = rtemplate)
+  st_crs(out) = st_crs(rtemplate)
+
+ # mapview::mapview(out)
+
+  stars::write_stars(out,
+                   file.path(cov_dir, paste0(re,"m"), "bgc.tif")) #tile name
+
+  
+  ## for very large raster (5m boundary dataset we need to use another method)
+  
+  #rtemplate <- raster::raster(file.path(cov_dir, paste0(re,"m"), "dem.tif"))
+  #out <- fasterize(bec_sf, rtemplate, field = "BGC_no")
+  #raster::writeRaster(out,
+  #                 file.path(cov_dir, paste0(re,"m"), "bgc.tif")) #tile name
+
+ 
+}
+  
+```
+
+# 2) Generate base DEM Layer from TRIM/CDED 
+
+Note to generate the landscape layer froim TRIM and expand the area to ensure the entire study area will be included study area 
+
+```{r}
+# update to cded function from bcmaps
+
+res = 25
+trim_folder <- file.path(cov_dir, "25m_trim")
+
+# create trim folder
+ifelse(!dir.exists(trim_folder), dir.create(trim_folder, recursive = TRUE), FALSE)
+
+# Use the expanded aoi to create a wider AOI raster
+# read in the aoi
+template <- raster(file.path(cov_dir, "25m_trim", "template.tif"))
+extent(template)
+# expand the template to wider extent to ensure edges are not cut off for landscape calculations
+# extend with a number of rows and columns (at each side)
+
+template_ex <- extend(template, c(100,100))
+extent(template_ex)
+
+# convert trim to expanded tempate
+trim <- raster(file.path(bcdata_dir, "BC_TRIM", "bc_elevation_25m_bcalb.tif"))
+trim_aoi <- crop(trim, template_ex)
+trim_aoi_prj <- projectRaster(trim_aoi, template_ex, method = 'bilinear')
+
+writeRaster(trim_aoi_prj, file.path(trim_folder, "dem.tif"), format = "GTiff", overwrite = TRUE)
+
+# crop trim output as place holder for DEM when missing lidar 
+trim_aoi <- crop(trim, template)
+trim_aoi_prj <- projectRaster(trim_aoi, template, method = 'bilinear')
+
+writeRaster(trim_aoi_prj, file.path(cov_dir, paste0(res,"m_trim"), "dem.tif"), format = "GTiff", overwrite = TRUE)
+
+
+```
+
+
+```{r}
+# export a 5m TRIM Dem 
+res = 5
+trim_folder <- file.path(cov_dir, "5m_trim")
+
+# create trim folder
+ifelse(!dir.exists(trim_folder), dir.create(trim_folder, recursive = TRUE), FALSE)
+
+# Use the expanded aoi to create a wider AOI raster
+# read in the aoi
+template <- raster(file.path(cov_dir, "5m_trim", "template.tif"))
+extent(template)
+# expand the template to wider extent to ensure edges are not cut off for landscape calculations
+# extend with a number of rows and columns (at each side)
+
+template_ex <- extend(template, c(100,100))
+extent(template_ex)
+
+# convert trim to expanded tempate
+trim <- raster(file.path(bcdata_dir, "BC_TRIM", "bc_elevation_25m_bcalb.tif"))
+trim_aoi <- crop(trim, template_ex)
+trim_aoi_prj <- projectRaster(trim_aoi, template_ex, method = 'bilinear')
+
+writeRaster(trim_aoi_prj, file.path(trim_folder, "dem.tif"), format = "GTiff", overwrite = TRUE)
+
+# crop trim output as place holder for DEM when missing lidar 
+trim_aoi <- crop(trim, template)
+trim_aoi_prj <- projectRaster(trim_aoi, template, method = 'bilinear')
+
+writeRaster(trim_aoi_prj, file.path(cov_dir, paste0(res,"m_trim"), "dem.tif"), format = "GTiff", overwrite = TRUE)
+
+```
+
+
+```{r}
+# Generate base rasters for Boundary (temp solution 
+# NOte this is for Boundary only
+
+res = 25
+dem_folder <- file.path(cov_dir, "25m")
+
+# read(dem)
+template <- raster(file.path(cov_dir, "25m", "template.tif"))
+
+
+dah <- raster(file.path(cov_dir, "25m", "DAH_25mclass.tif"))
+mrvbf <- raster(file.path(cov_dir, "25m","Boundary_25m_MRVBF64Up2Low6.tif"))
+dem <- raster(file.path(cov_dir, "25m", "Boundary_25m_DEM2.tif"))
+landclass <- raster(file.path(cov_dir, "25m", "LandForm_Seive10_25m.tif"))
+
+#lays <-stack(dah, mrvbf, dem, landclass)
+
+
+crs(dem)<- "+proj=aea +lat_0=45 +lon_0=-126 +lat_1=50 +lat_2=58.5 +x_0=1000000 +y_0=0 +datum=NAD83 +units=m +no_defs"
+
+lay_crop <- crop(dem, template)
+dem_aoi <- projectRaster(lay_crop, template, method = 'bilinear')
+
+dem_aoi
+ anc_layers <- c("dah_3class.tif", "mrvbf_LS_s.tif", "landform_stt.tif", "slope.tif")
+
+writeRaster(dem_aoi, file.path(cov_dir, "25m", "dah_3class.tif"))
+writeRaster(dem_aoi, file.path(cov_dir, "25m", "mrvbf_LS_s.tif"))
+writeRaster(dem_aoi, file.path(cov_dir, "25m", "landform_st.tif"))
+writeRaster(dem_aoi, file.path(cov_dir, "25m", "dem_ls.tif"))
+
+
+dem_aoi <- crop(dem, template)
+dem_aoi<- projectRaster(dem_aoi, template, method = 'bilinear')
+
+
+```
+
+
+
+```{r}
+
+# test the difference in smoothing 
+
+# options: 
+plot(x, interpolate = T)
+y = disaggregate(x, 5, method = 'bilinear')
+y = focal(x , w = matrix(1,5,5), mean)
+
+# both focal
+
+# behrens paper
+
+res = 5
+dem <- raster(file.path(cov_dir, paste0(res,"m"), "dem.tif"), overwrite = T)
+
+
+
+# 3x3
+r3 <- focal(dem, w=matrix(1/9,nrow=3,ncol=3))
+
+# 5x5 mean filter
+r5 <- focal(dem, w=matrix(1/25,nrow=5,ncol=5)) 
+
+# 10x10 mean filter
+r10 <- focal(dem, w=matrix(1/100,nrow=5,ncol=5)) 
+
+
+# Gaussian filter
+gf <- focalWeight(dem, 2, "Gauss")
+rg <- focal(dem, w=gf)
+
+
+out_dir ="E:/temp/PEM_DATA/BEC_DevExchange_Work/Deception_AOI/results/"
+
+writeRaster(r3, file.path(out_dir, "r3_filter.tif"))
+writeRaster(r5, file.path(out_dir, "r5_filter.tif"), overwrite = TRUE)
+writeRaster(r10, file.path(out_dir,"r10_filter.tif"), overwrite = TRUE)
+
+
+seq filter(
+increasing filter size()
+larger size resolution
+)
+
+
+
+```
+
+
+
+# Reproject the base layers so same projection can be used in stars stack 
+
+```{r}
+
+## writeout option
+cov.dir = "D:/PEM_DATA/BEC_DevExchange_Work/Deception_AOI/1_map_inputs/covariates/5m"
+#out.dir = "D:/PEM_DATA/BEC_DevExchange_Work/Deception_AOI/1_map_inputs/covariates/5m/reproj"
+
+rasterfiles <- list.files(cov.dir, full.names = TRUE)
+
+
+baseraster <- raster::raster(rasterfiles[4])
+
+
+for (iii in 137:150){
+      #  print(iii)
+        iii = 205
+        #sraster = read_stars(rasterfiles[iii])
+        #print(sraster)
+        updateraster <- raster::raster(rasterfiles[iii])
+        rname <- basename(rasterfiles[iii])
+        rname
+        crs(updateraster) <- crs(baseraster)
+        writeRaster(updateraster,(file.path(cov.dir, "reproj", rname)))
+} 
+
+```
+
+
+# check that all rasters are aligned and can stack
+
+```{r}
+## writeout option
+cov.dir = "D:/PEM_DATA/BEC_DevExchange_Work/EagleHills_AOI/1_map_inputs/covariates/5m"
+
+rasterfiles <- list.files(file.path(cov_dir, "5m"), full.names = TRUE)
+
+baseraster <- raster::raster(rasterfiles[1])
+
+aa <- rasterfiles
+rasterfiles <- aa[1:5]
+
+for(ii in rasterfiles){
+  rr <- raster(ii)
+  print(ii)
+  print(extent(rr))
+  
+  }
+
+[1] "EagleHills_AOI/1_map_inputs/covariates/5m/std.tif" # 55
+[1] "EagleHills_AOI/1_map_inputs/covariates/5m/p95.tif" # 46
+[1] "EagleHills_AOI/1_map_inputs/covariates/5m/p90.tif" # 45
+[1] "EagleHills_AOI/1_map_inputs/covariates/5m/p75.tif" # 44
+[1] "EagleHills_AOI/1_map_inputs/covariates/5m/p50.tif" # 43
+"EagleHills_AOI/1_map_inputs/covariates/5m/dem.tif" #8
+1] "EagleHills_AOI/1_map_inputs/covariates/5m/cov.tif" #6
+
+
+rno = 8
+
+foi_stack <- raster(rasterfiles[rno])
+rname = rasterfiles[rno]
+  rname
+#foi_stack <- stack(foi)
+#foi_stack
+
+fst <- raster::crop(foi_stack, baseraster)
+crs(fst) <- crs(baseraster)
+
+stack(fst, baseraster)
+
+#fst <- resample(fst, baseraster, method = "bilinear")
+
+writeRaster(fst, file.path(rname), bylayer = TRUE, suffix = names(fst), overwrite = TRUE)
+
+ 
+
+stack(rasterfiles)
+
+
+
+for (iii in 137:150){
+      #  print(iii)
+        iii = 55
+        #sraster = read_stars(rasterfiles[iii])
+        #print(sraster)
+        updateraster <- raster::raster(rasterfiles[iii])
+        rname <- basename(rasterfiles[iii])
+        rname
+        crs(updateraster) <- crs(baseraster)
+        writeRaster(updateraster,(file.path(cov.dir, "reproj", rname)))
+
+        
+
+
+
+########################################################
+
+rasterfiles <- list.files(cov.dir, full.names = TRUE)
+
+for (iii in 1:length(rasterfiles)){
+        
+        iii = 1
+        
+        orig_raster <- rasterfiles[iii] # 5
+        print (orig_raster)
+        orig_raster <- raster(orig_raster)
+        
+        outfile <- gsub("sdat", "tif", sagafile)
+        r <- readGDAL(file.path(saga_files,"sagaTmp",sagafile))
+        w <- file.path(saga_files, "outputs", outfile) #, sep = "")
+        writeGDAL(r, w)
+        
+        rfile <- raster(w)
+        
+        if(is.na(crs(rfile))) {
+                print("setting projection to 3005")
+                # ensure raster is in BC albers projection
+                PROJ <- crs(paste("+init=epsg:",3005, sep = "")) 
+                crs(rfile) <- PROJ 
+                
+        } else {
+                print("projection already set to 3005")
+        }
+        
+        w_out <- writeRaster(rfile, file.path(saga_files, basename(w)), overwrite = TRUE, driver = "GTiff")
+        
+}
+
+stack(rasterfiles[1:5])
+
+
+```
+

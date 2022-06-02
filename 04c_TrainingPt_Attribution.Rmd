@@ -1,0 +1,319 @@
+---
+title: "Atribute and prepare training data for modelling"
+date: "10/15/2020"
+output: html_document
+---
+
+```{r global_options, include=FALSE }
+require(knitr)
+```
+
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(raster)
+library(fasterize)
+library(sf)
+library(tools)
+library(stringr)
+library(lwgeom)
+library(dplyr)
+library(foreach)
+library(scales)
+
+```
+
+## Introduction and background
+
+Initially there was discussion on how to avoid spatial autocorrelation within the current sampling regime, given than paired samples will likely be spatially autocorrelated. 
+
+Initially a number of options were discussed to subsample the data; including 
+- all raw points (sampled at 2.5m scale)
+- subsampling at given distances (5m, 30, 50 etc) (per map unit)
+- subsampling at standardized distances (5m, 30) (not by map unit)
+
+We also investigated other methods of subsampling data including use clhs to subsample common data, however difficult to determine optimum covariates and numbers to subsample (ie all balanced, proportional representation or semi balanced. ) 
+
+After testing and development of the sliced Leave on out methods for accuracy assessment, we can utilize all the training points generated per transect (i.e 2.5m resolution). This allows us to maximise all possible training points and use arithmetic techniques (such as smoting and downsampling) to address the imbalanced data sets. Other options trialed include subsampling based on clhs, or based on modelled outputs. 
+
+
+This script uses cleaned datasets to create training pt for modeling. 
+All points are consolidated and standardised per AOI in script 
+
+(04a_TrainingPt_TransectImport_## NAME OF STUDY AREA). 
+
+This script with create training points, standardise the data and attribute the training points with covariates. Note this needs to be rerun if new covariates are generated. 
+
+
+This script requires : 
+- transect layout saved in geopackage format 
+- raster 2.5m 
+- map unit key
+- prepared covariates 
+
+input folder:  (AOI_dir, "2_sample_design", "stage1_StudyDesign", "training_pts")
+output folder: (AOI_dir, "1_map_inputs", "trainingData", "clean")
+
+
+
+## 1. Set up folder structure
+
+```{r set up folder structure }
+
+AOI <- "Deception"
+#AOI <- "BoundaryTSA"
+#AOI <- "EagleHills"
+#AOI <- "DateCreek"
+#AOI <- "Baboon"
+#AOI <- "Buck"
+#AOI <- "OldFort"
+#AOI <- "Wetzinkwa"
+
+
+#AOI_dir <- file.path(".", paste0(AOI,"_AOI"))
+AOI_dir <- file.path(paste0(AOI,"_AOI"))
+cov_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+
+s1_dir <- file.path(AOI_dir, "2_sample_design", "stage1_StudyDesign", "training_pts")
+
+map.key  <- read.csv(file.path(AOI_dir, "_MapUnitLegend", 
+                                 paste0(AOI, "_MapUnitLegend.csv")), 
+                       stringsAsFactor = FALSE)
+
+# # if stage 2 is also so be used: 
+# s2_dir <- file.path(AOI_dir, "2_sample_design", "stage2_StudyDesign", "training_pts")
+#   
+# points_dir <- file.path(AOI_dir, "2_sample_design", "stage2_point_data", "training_pts")
+
+# all stages
+output_cleaned_dir <- file.path(AOI_dir, "1_map_inputs", "trainingData", "clean")
+
+final_path  <- file.path(AOI_dir, "1_map_inputs", "trainingData")
+
+if(!dir.exists(output_cleaned_dir)) dir.create(output_cleaned_dir, recursive = TRUE)
+```
+
+
+```{r Functions}
+source(here::here('_functions', 'extend_lines.R'))
+source(here::here('_functions', 'make_lines.R'))
+source(here::here('_functions', 'transect_sample.R'))
+source(here::here('_functions', 'multiline_to_line.R'))
+
+```
+
+
+```{r}
+#Read in the processed transect data
+
+stype = "s1" # define if this is S1 or S2
+
+if(stype == "s1"){
+
+processed_transects <- st_read(
+  file.path(s1_dir, "proc_s1_transects.gpkg")) %>% 
+  mutate(mapunit12 = paste0(mapunit1,"/", mapunit2),
+         mapunit12 = gsub("/NA","",mapunit12)) %>%
+  dplyr::select(-c("X","Y"))
+
+transect_layout_buf <- st_read(file.path (s1_dir, "transect_layout_s1.gpkg")) %>%
+  st_buffer(10) 
+
+} else {
+##s2:
+
+processed_transects <- st_read(
+  file.path(s2_dir, "proc_s2_transects.gpkg")) %>%
+  mutate(mapunit12 = paste0(mapunit1,"/", mapunit2),
+         mapunit12 = gsub("/NA","",mapunit12))
+
+transect_layout_buf <- st_read(file.path (s2_dir, "transect_layout_s2.gpkg")) %>%
+ st_buffer(10)
+
+} 
+
+```
+
+ 
+The units associated with transect raster are the field calls. 
+
+## Part 2: Point sampling from transect data. 
+
+We currently have a number of methods to sample the transect data (either using vector or raster data). 
+These include; 
+- Raster Data extraction (using a base raster of 5m)
+- Vector: [5m interval sampling](http://www.forestecosystems.ca/PEMv2/#modelling)
+- Vector: 30 m interval sampling 
+
+ 
+Option 1: Extract points based on the base raster to be used in modelling
+
+```{r convert data to raster}
+# convert the vector data to raster for sampling. Build key which retains the primary and secondary call 
+## import base raster of resolution required 
+
+res <- 5
+res_folder <- paste0(res, "m")
+
+raster_template <- raster(list.files(file.path(cov_dir, res_folder), pattern = ".tif", full.names = TRUE)[1])
+
+if("ID" %in% colnames(processed_transects) == FALSE){
+  print ("adding ID column")
+  processed_transects <- processed_transects %>% 
+    mutate(ID = seq(1, length(processed_transects$order), 1))
+}
+ 
+
+processed_transects_id <- st_drop_geometry(processed_transects)
+
+lBuff <- processed_transects %>% 
+    sf::st_buffer(., dist = 2.5, endCapStyle = "FLAT", joinStyle = "MITRE") %>%
+    sf::st_cast(.,"MULTIPOLYGON")
+
+rastAll <- fasterize(lBuff, raster_template, field = "ID")
+
+raster_points_xy <- as.data.frame(rasterToPoints(rastAll)) %>% 
+  st_as_sf(coords = c("x", "y"), crs = 3005) %>%
+  merge(processed_transects_id, by.x = names(rastAll), by.y = "ID") 
+
+# format transect id names 
+
+if(stype == "s1"){
+raster_points_xy <- format_transect(raster_points_xy) }
+
+st_write(raster_points_xy, file.path(output_cleaned_dir,  
+                                paste0(stype, "_transect_all_pts.gpkg")), 
+                        delete_layer = TRUE)
+
+
+```
+
+
+# Option 2: generate points based on vector data
+This will use the function **transect_sample** to extract points from a line at defined distance intervals, including a sample per mapunit/segment. 
+
+```{r extract points based on 5m distance per map unit }
+
+for(i in c(5, 30, 50 )) {
+  #i = 5
+  SamplePtsXY <- transect_sample(processed_transects, mdist = i) %>% 
+    dplyr::select(-one_of("ID")) %>% 
+    cbind(st_coordinates(.)) %>% 
+    distinct(.keep_all = TRUE) %>% 
+    rename_all(.funs = tolower) %>% 
+    st_transform(3005) %>%
+    #dplyr::select(mapunit1, mapunit2, transect_id)
+    dplyr::select(mapunit1, mapunit2, transect_id, data_type, transition, observer, comments) 
+  
+# format transect data
+  if(stype == "s1"){
+    SamplePtsXY  <- format_transect(SamplePtsXY) }
+
+  
+  st_write(SamplePtsXY, file.path(output_cleaned_dir, paste0(stype,"_transect_", i, "m_pts.gpkg")), delete_layer = TRUE)
+
+  }
+
+```
+
+# Option 3: generate points based on vector data
+This will use the function **transect_sample_standard** to extract points from a line at a given distance interval (irrespective of map unit) 
+
+```{r extract points based on 5m distance per map unit }
+
+for(i in c(5, 30, 50)) {
+  #i = 30
+   SamplePtsXYstand <- processed_transects %>% 
+    st_line_sample(., density = 1, type = "regular") %>%
+    st_cast(., "POINT") %>% 
+    st_sfc(.) %>% st_sf(.) %>%
+    slice(which(row_number() %% i == 1)) %>%
+    st_join(processed_transects, join = st_nearest_feature) %>%
+    dplyr::select(-one_of("ID")) %>% 
+    cbind(st_coordinates(.)) %>% 
+    distinct(.keep_all = TRUE) %>% 
+    rename_all(.funs = tolower) %>% 
+    st_transform(3005) %>%
+    dplyr::select(mapunit1, mapunit2, transect_id, data_type, transition, observer, comments) 
+     
+# format transect data
+  if(stype == "s1"){
+    SamplePtsXYstand  <- format_transect(SamplePtsXYstand) }
+
+   
+  st_write(SamplePtsXYstand, file.path(output_cleaned_dir, paste0(stype,"_transect_st_", i, "m_pts.gpkg")), delete_layer = TRUE)
+
+  }
+
+```
+
+
+# PART 2: 
+
+## Add attribute data to points
+
+Load each file and extract the raster values at each point. All attributed files can be found in the clean folder ready for processing
+
+```{r}
+res_folder = "5m"
+
+unattributed_files <- list.files(output_cleaned_dir, pattern = ".gpkg$", full.names = TRUE)
+
+cov_dat <- stack(list.files(file.path(cov_dir, res_folder), pattern = ".tif$", 
+                            full.names = TRUE))
+
+#cov_dat[is.na(cov_dat[])] <- 0 
+# cov_dat <- stack(list.files("./Deception_AOI/1_map_inputs/covariates/lasmetrics_5m/"))#, pattern = ".tif", full.names = TRUE)
+# #unattributed_files <- unattributed_files[c(18:19)]
+
+att_folder <- file.path(final_path, paste0("att_",res_folder))
+if(!dir.exists(att_folder)) dir.create(att_folder, recursive = TRUE)
+
+for(i in unattributed_files) {
+  #
+ #i = unattributed_files[1]
+  model_id <- gsub(".gpkg$", "_att.gpkg", basename(i))
+  
+  # Perform extraction once for all data
+  all_pts_attributed <- st_read(i, quiet = TRUE) %>% 
+  #   group_by(SitePondGpsRep) %>%
+  # summarise(geometry = st_combine(geometry)) %>%
+  # st_cast("POLYGON") %>%
+  # %>% st_cast("POLYGON")
+    cbind(raster::extract(cov_dat, .)) 
+  
+  #cbind(exactextractr::exact_extract(cov_dat, .)) 
+  st_write(all_pts_attributed, dsn = file.path(final_path, paste0("att_",res_folder), model_id), delete_layer = TRUE)
+
+  }
+  #fwrite(all_pts_attributed, paste0(final_path, "/S1_AllCovariates.csv"))
+
+```
+
+# Format Trim data set as test: 
+
+Attribute the trim data by extracting the data set, removing previous attributes and extracting values from TRIM derived DEM values. 
+
+```{r}
+res_folder = "5m"
+#res_folder = "5m_trim" # trim version 
+
+unattributed_files <- list.files(file.path(final_path, paste0("att_", res_folder)), pattern = ".gpkg$", full.names = TRUE)
+
+cov_dat <- stack(list.files(file.path(cov_dir, res_folder), pattern = ".tif$", 
+                            full.names = TRUE))
+
+#unattributed_files <- unattributed_files[8:14]
+
+for(i in unattributed_files) {
+  #i = unattributed_files[1]
+  all_pts_attributed <- st_read(i, quiet = TRUE) %>%    
+    cbind(raster::extract(cov_dat, .)) 
+  
+   st_write(all_pts_attributed, dsn = file.path(final_path, "att_5m_trim", basename(i)), delete_layer = TRUE)
+  
+}
+
+```
+

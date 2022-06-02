@@ -1,0 +1,459 @@
+---
+title: "LAS_to_DEM"
+author: "Matthew Coghill and Gen Perkins 
+date: "19/04/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This document is meant to outline the processing of lidar files to a DEM, standard deviation, canopy coverage, and canopy height percentiles at desired resolutions and percentiles. 
+
+To process these step we use LidR package in R. The inputs required are tiled Las/Laz files. 
+Where possible we have followed the best practise guide for lidar procesing (White et. el, 2010). Using LidR package used the book (https://jean-romain.github.io/lidRbook/engine.html)
+
+
+ The major steps include:
+
+0. Reproject LAS files (if necessary);
+1. Filter LAS files; 
+2. Produce DEM files; 
+3. Normalize LAS files based on the DEM files; and
+4. Produce canopy height metrics for your desired resolutions.
+
+Matts notes: 
+On a machine with 8Gb RAM and 4 cores, each step takes between 1-2 hours and performing this whole script on 10 raw LAS files between 80 - 250 MB took about 1 hour. Eagle Hills has 191 LAS files total, so I would expect the whole function to take ~20 hours to complete given my laptops limitations. 
+
+
+# Processs from script (Sasha)
+1) Define input / output dirs, Lastools.exe
+2) Assign EPSG 3005 (las2las.exe)
+
+
+3) drop class 6 and 7 (buildings and low point density)(las2las.exe)
+4) extract metadata (lasinfo.exe)
+5) Tile data, 1km and 20 km overlap buffer. (lastile.exe)
+6) remove duplicates (lasduplicates.exe)
+7) run voxel density noise classification/removal (lasnoise.exe) (aggressive step3 - isolate 5)
+8) output and check noise points
+9 ) generate DTM (1m) blast2em.exe
+10 ) genrate DSM (1m/5m) lasgrid.exe
+11) generate point density raster ()
+12 generate scan angle raster 
+13) generate CHM point cloud (lasheight.exe)
+14) calculate Lidar metrics 
+
+
+
+
+# load packages
+
+```{r Packages, include=FALSE}
+  
+ls <- c("lidR", "rlas", "future", "stars", "tidyverse", "fasterize")
+new_packages <- ls[!(ls %in% installed.packages()[, "Package"])]
+if(length(new_packages)) install.packages(new_packages)
+lapply(ls, library, character.only = TRUE)[0]
+rm(ls, new_packages)
+
+```
+
+# Define folders
+
+```{r Define inputs}
+
+AOI <- "Baboon"
+AOI_dir <- file.path(paste0("./", AOI, "_AOI"))
+
+# Folder for processing and saving intermediate LAS files
+#lidar_path <- file.path(AOI_dir, "0_raw_inputs", "dem", "las") 
+ 
+#lidar_path <- "E:/temp/PEM_DATA/LiDAR_AOI/Buck_2018/lasz/Buck"
+#lidar_path <- "E:/temp/PEM_DATA/LiDAR_AOI/Baboon_2018/lasz/Baboon/test"
+lidar_path <- "D:/LiDAR_AOI/Baboon_2018/lasz/Baboon"
+
+# Output folders
+shape_out_path  <- file.path(AOI_dir, "0_raw_inputs", "base_layers") 
+raster_out_path <- file.path(AOI_dir, "1_map_inputs", "covariates")
+
+
+
+# if doesnt exist then build folders: 
+
+
+
+```
+
+
+
+
+Working with lax files in tandem with las files supposedly increases the processing speed of the functions, though I'm not quite certain of that (see documentation for the lidR package). It is scripted in here though! See here for more documentation: https://cran.r-project.org/web/packages/lidR/vignettes/lidR-computation-speed-LAScatalog.html
+
+For computing the standard deviation, cover, and canopy height metrics, normalized LAS files needed to be used. I followed along the LASTools rules for calculating each metric: 
+http://lastools.org/download/lascanopy_README.txt
+For standard deviation, the standard deviation of heights were measured above 1.37m (along with the quantile aka percentile calculations), and canopy cover was measured at heights above 2m. 
+
+The function below performs a variety of tasks depending on the inputs given. For example, if you only want to produce a 25m DEM, then ignore the variables "reference_res" and "height_percentiles" since they only come into play when developing canopy height metrics and that task takes significantly longer to perform. If you want associated height metrics, then define the reference resolution (i.e.: height metrics will be made for those resolutions and then resampled to other resolutions afterwards) and percentiles of points for height metrics.
+
+
+Note: this function uses some of the functions from the terra package, though I'm unsure whether it will end up being any quicker than using the raster package.
+
+
+## Updated script for April 2021.
+
+
+```{r Testing script to check data }
+
+# read in a file to check the projections
+las_file <- list.files(lidar_path, full.names = TRUE)[11]
+las_raw <- readLAS(las_file)
+las_check(las_raw)
+summary(las_raw)
+
+orig_epsg <- epsg(las_raw)
+
+plot(las_raw, color = "ScanAngleRank", bg = "white", axis = TRUE, legend = TRUE)
+plot(las_raw, color ="Intensity")
+
+las_raw <- readLAS(las_file, select = "xyzi")
+#https://jean-romain.github.io/lidRbook/io.html
+
+# Filter options
+las <- readLAS(las_file, select = "xyzi")
+las <- readLAS(las_file, select = "c", filter = "-keep_first")
+
+x <- plot(las_raw, bg = "white", size = 3)
+#add_dtm3d(x, dtm) # if dtm already generated
+
+
+# test classification (run subset by filtering the files)
+las <- readLAS(las_file, filter = "-keep_first" )
+
+nonveg <- filter_poi(las, Classification != LASHIGHVEGETATION)
+veg <- filter_poi(las, Classification == LASHIGHVEGETATION)
+
+x <- plot(nonveg, color = "Classification", bg = "white", size = 3)
+plot(veg, add = x)
+
+```
+
+
+
+```{r}
+
+dir.create(file.path(lidar_path, "1_filtered"))
+dir.create(file.path(lidar_path, "2_classified"))
+dir.create(file.path(lidar_path, "3_dtm"))
+dir.create(file.path(lidar_path, "4_mask"))
+
+# testing lines: 
+res = 25 # testing with 25 resolution for the moment 
+
+# read in catalogue
+las_raw <- readLAScatalog(lidar_path)
+
+# validate the files
+las_check(las_raw)
+
+# set up parrallel processing
+library(future)
+plan(multisession)
+
+# set options for output
+opt_chunk_buffer(las_raw) <- 30
+opt_chunk_size(las_raw)   <- 0
+opt_filter(las_raw)       <- "-drop_z_below 0"
+opt_select(las_raw)       <- "xyz"
+
+
+## Step 1: run ground classification
+## Classification of ground points is an important step in processing point cloud data. Distinguishing between ground and non-ground points allows creation of a continuous model of terrain elevation (see section 4).
+
+opt_output_files(las_raw) <- paste0(lidar_path,"/","2_classified","/", "{*}_classified")
+
+classified_ctg <- classify_ground(las_raw, csf())
+
+
+## Step 2: Generate dtm 
+
+opt_output_files(classified_ctg) <- paste0(lidar_path,"/","3_dtm", "/{*}_dtm")
+
+dtm <- grid_terrain(classified_ctg , res, tin())
+
+
+## or on demand (in memory)
+#dtm <- grid_terrain(classified_ctg , res, tin())
+dtm_prod <- terrain(dtm, opt = c("slope", "aspect"))
+dtm_hillshade <- hillShade(slope = dtm_prod$slope, aspect = dtm_prod$aspect)
+plot(dtm_hillshade, col = grey.colors(50,0,1), legend = FALSE)
+
+## # save somewhere else
+# writeRaster(dtm, file.path(AOI_dir, "0_raw_inputs", "dem", "dem_temp.tif"))
+# saveRDS(dtm, file.path(AOI_dir, "0_raw_inputs", "dem", "dem_temp.rds"))
+#summary(dtm)
+#plot(dtm)
+
+
+# using parrallel processing was creating issues with the remote docker image
+#plan("default")
+#set_lidr_threads(0)
+#message("Masking interpolated area where point cloud is absent")
+
+# Step 3: Create a mask 
+# Create a mask using all las points. It will be full of holes though, so 
+# It will need to be further processed
+
+opt_output_files(classified_ctg) <- paste0(lidar_path,"/","4_mask", "/{*}_mask")
+
+mask <- grid_metrics(las = classified_ctg, ~length(Z) * 0, res = 1)
+
+#saveRDS(mask, file.path(AOI_dir, "0_raw_inputs", "dem", "dem_temp1.rds"))
+
+# Create polygon of study area from the DEM with no holes in it
+aoi_poly <- st_as_stars(mask) %>% 
+  st_as_sf(as_points = FALSE, merge = TRUE, na.rm = TRUE, use_integer = TRUE) %>% 
+  st_geometry() %>% 
+  lapply(., function(x) 
+    x[which.max(lapply(x, function(y) st_area(st_polygon(list(y)))))]) %>% 
+  st_multipolygon() %>%
+  st_combine() %>%
+  st_cast("POLYGON") %>%
+  st_sf(crs = orig_epsg) %>% 
+  slice(which.max(st_area(.)))
+
+ # st_write(aoi_poly, file.path(raster_out_path, "aoi_mask.gpkg"))
+
+  mask_aoi <- fasterize(aoi_poly, dtm)
+  
+  # Mask and save outputs
+  dem_masked <- mask(dtm, mask_aoi)
+
+  # read in template and crop raster to template
+  
+  dtm_template <- raster(file.path(raster_out_path, paste0(res,"m"), "template.tif"))   
+  dem_masked <- crop(dem_masked, dtm_template)
+  
+  writeRaster(dem_masked, file.path(raster_out_path, "dem_tin.tif"), overwrite = TRUE)
+  st_write(aoi_poly, file.path(shape_out_path, "dem_mask.gpkg"), 
+           delete_dsn = TRUE, delete_layer = TRUE) 
+  
+
+# 
+# #out.dir = "WilliamsLake_AOI/0_raw_inputs/dem/100mile_2020_LiDAR_DEMs/LAZ0_DEM1m/"
+# out.dir = "OldFort_AOI/0_raw_inputs/dem/las/processed"
+# 
+#   r_tiles <- list.files(out.dir,pattern = ".tif$",
+#                             full.names = TRUE)
+# 
+#   gdalUtils::mosaic_rasters(gdalfile = r_tiles,
+#                                 dst_dataset = paste0(out.dir, "mosaic.tif"),  #output: dir and filename
+#                                 output_Raster = TRUE) ## saves the raster (not just a virtual raster)
+
+
+```
+
+
+## Generating Area Based metrics
+
+
+```{r Process DEMs}
+
+  lidar_dir = lidar_path 
+  res_choices = 25 
+  height_percentiles = 95
+  reference_res = 10
+  
+  #raster_out_dir = raster_out_path 
+  #shape_out_dir = shape_out_path
+  #orig_epsg = 26910
+  #transform_epsg = 3005
+  #reference_res = 10
+
+  las_raw <- readLAScatalog(lidar_dir)
+  
+  # Preparations for the filtered point cloud step (ahead)
+  opt_filter(las_raw)       <- "-drop_z_below 0"
+  opt_select(las_raw)       <- "xyz"
+  opt_chunk_buffer(las_raw) <- 30
+  opt_chunk_size(las_raw)   <- 0
+  
+  # Create filtered point cloud (necessary)
+  las_filtered_path <- file.path(processing_dir, "2_las_filtered")
+  
+  # read in raster 
+  dtm <- raster(dem_masked, file.path(raster_out_path, "dem_tin.tif"), overwrite = TRUE)
+  aoi_poly <- st_read(file.path(shape_out_path, "aoi_dtm.gpkg"))
+
+  
+  # normalise the dtm
+  
+  
+  nlas <- las - dtm
+  plot(nlas, size = 4, bg = "white")
+  
+  nlas <- normalize_height(las, dtm, method = "bilinear")
+  
+  
+  
+  
+  
+  
+  
+  
+  
+    
+    message("\rFiltering noisy data points")
+    las_filtered <- lasfilternoise(las_raw, sensitivity = 1.2)
+    
+    message("\rCreating LAX files of filtered LAS files for faster processing")
+    plan(multisession, workers = availableCores())
+    lidR:::catalog_laxindex(las_filtered)
+    plan("default")
+    set_lidr_threads(0)
+  } 
+  
+
+  # If height percentiles are requested, then point cloud normalization must occur
+  if(length(height_percentiles > 0)) {
+    
+    # Check to see if the files already exist. If they do, don't waste time 
+ 
+    las_normalized_path <- file.path(processing_dir, "3_las_normalized")
+    if(!dir.exists(las_normalized_path) || 
+       length(list.files(las_normalized_path, pattern = ".las$|.laz$")) != 
+       length(list.files(lidar_dir, pattern = ".las$|.laz$"))) {
+      
+     
+      
+      opt_output_files(las_filtered) <- normalizePath(
+        file.path(las_normalized_path, "{ORIGINALFILENAME}_normalized"), 
+        mustWork = FALSE
+      )
+      
+      # Generate normalized point cloud 
+      set_lidr_threads(availableCores() / 2)
+      plan(multisession, workers = availableCores() / 2)
+      las_normalized <- lasnormalize(las_filtered, algorithm = tin(), na.rm = TRUE)
+      
+      plan(multisession, workers = availableCores())
+      lidR:::catalog_laxindex(las_normalized)
+      plan("default")
+      set_lidr_threads(0)
+    } 
+    las_normalized <- readLAScatalog(las_normalized_path)
+    crs(las_normalized) <- transform_crs
+    opt_chunk_buffer(las_normalized) <- 30
+    opt_chunk_size(las_normalized)   <- 0
+    opt_output_files(las_normalized) <- ""
+    
+    for(res in reference_res) {
+      dem <- dem_create(
+        las_filtered, res, transform_crs, shape_out_dir, raster_out_dir
+      )
+      
+      # Get height percentile metrics and standard deviations
+      # For some reason, the height_percentiles variable needs to be exported to
+      # the global environment to run the custom height metrics fucntion
+      message("\rProcessing height metrics")
+      height_percentiles <<- height_percentiles 
+      opt_filter(las_normalized) <- "-drop_z_below 1.37"
+      metrics <- grid_metrics(las_normalized, ~my_metrics(Z), res = res) %>% 
+        calc(fun = function(x) { 
+          x[is.na(x)] <- 0
+          return(x)
+        }) %>% 
+        mask(dem)
+      
+      for(met in names(metrics)) {
+        writeRaster(subset(metrics, met), file.path(raster_out_dir, 
+                                      paste0(res, "m"), 
+                                      paste0(met, "_", res, "m.tif")), 
+                    overwrite = TRUE)
+      }
+      
+      # Get cover values on a grid (0-100)
+      message(paste0("\rCreating ", res, "m canopy cover grid"))
+      opt_filter(las_normalized) <- "-keep_first"
+      cov <- grid_metrics(
+        las_normalized, ~100 * (sum(Z > 2) / length(Z)), res = res) %>% 
+        calc(fun = function(x) { 
+          x[is.na(x)] <- 0
+          return(x)
+        }) %>% 
+        mask(dem, filename = file.path(raster_out_dir, 
+                                       paste0(res, "m"), 
+                                       paste0("cov_", res, "m.tif")), 
+             overwrite = TRUE)
+    }
+    
+    # Produce DEM's that aren't part of the reference_res resolutions
+    for(rest in res_choices[!res_choices %in% reference_res]) {
+      dem <- dem_create(
+        las_filtered, rest, transform_crs, shape_out_dir, raster_out_dir
+      )
+    }
+    
+    dem_files_all <- list.files(file.path(raster_out_dir), 
+                                pattern = paste0("dem.tif"), 
+                                full.names = TRUE, recursive = TRUE)
+    
+    # Prevents rerunning the reprojection step ahead when they are already made
+    dem_files <- dem_files_all[!sapply(dem_files_all, function(x) 
+      res(raster(x))[1]) %in% reference_res]
+    
+    height_files <- list.files(
+      file.path(raster_out_dir, paste0(reference_res, "m")), 
+      pattern = paste0("*.", reference_res, "m.tif$", collapse = "|"), 
+      full.names = TRUE, recursive = TRUE
+    )
+    
+    height_stack <- stack(height_files)
+    for(i in dem_files) {
+      height_reprojected <- projectRaster(height_stack, raster(i))
+      for(j in names(height_reprojected)) {
+        mask(subset(height_reprojected, j), 
+             filename = file.path(dirname(i), paste0(j, ".tif")), 
+             overwrite = TRUE)
+      }
+    }
+    
+    height_files_final <- list.files(
+      file.path(raster_out_dir), 
+      pattern = paste0("*.", reference_res, "m.tif$", collapse = "|"), 
+      full.names = TRUE, recursive = TRUE
+    )
+    
+    return(sort(c(dem_files_all, height_files_final)))
+    
+  } else {
+    for(i in res_choices) {
+      dem <- dem_create(
+        las_filtered, i, transform_crs, shape_out_dir, raster_out_dir
+      )
+    }
+    dem_files <- list.files(file.path(raster_out_dir), 
+                            pattern = paste0("dem.tif"), 
+                            full.names = TRUE, recursive = TRUE)
+    return(sort(dem_files))
+  }
+}
+
+```
+
+Now it's just a matter of running the above function.
+
+```{r Run functions}
+lidar_process <- process_lidar(
+  lidar_dir = lidar_path, 
+  res_choices = c(2.5, 5, 10, 25), 
+  height_percentiles = c(50, 75, 90, 95),
+  raster_out_dir = raster_out_path, 
+  shape_out_dir = shape_out_path, 
+  orig_epsg = 3005,
+  transform_epsg = NULL,
+  reference_res = 10
+)
+```
+

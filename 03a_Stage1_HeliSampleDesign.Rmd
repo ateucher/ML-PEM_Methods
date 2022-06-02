@@ -1,0 +1,374 @@
+---
+title: "Stage 1 Sample Design for Heli sample points"
+Script authors: "Gen Perkins" 
+date: "08/29/2020"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r global_options, include=FALSE}
+require(knitr)
+
+```
+
+This script creates samples specifically for heli sampling. Points are generated use the travelling salesman problem scripting developed by Kiri Daust. Paired sample transects are generated as per methods outlines in "03_stage 1 SampleDesign.Rmd". 
+
+
+```{r setup, include=FALSE}
+
+library(raster)
+library(sf)
+library(fasterize)
+library(gdistance)
+library(tmap)
+library(tidyverse)
+library(LearnGeom)
+library(clhs)
+library(stars)
+library(plyr)
+
+```
+
+```{r setup user directories}
+
+# input parameters
+
+#AOI <- "Deception"
+AOI <- "BoundaryTSA"
+
+#map_res <- 25 # Defines resolution of map to use for cLHS
+map_res <- 5
+
+transect_length <- 250 # Define the length of triangle on each side
+paired_distance <- 100 # Define the distance apart each triangle may be
+
+centroid_distance <- 2*(transect_length/sqrt(3)) + paired_distance
+map_res_character <- paste0(map_res, "m")
+
+AOI.dir <- file.path(paste0(AOI, "_AOI"))
+shapes_path <- file.path(AOI.dir, "0_raw_inputs", "base_layers")
+raster_path <- file.path(AOI.dir, "1_map_inputs", "covariates", map_res_character)
+out_path <- file.path(AOI.dir, "2_sample_design", "stage2_StudyDesign")
+mask_path <- file.path(AOI.dir, "2_sample_design", "stage1_StudyDesign")
+
+bgc.sf = st_read(file.path(shapes_path, "bec.gpkg"), quiet = TRUE) %>%
+  st_transform(3005) %>%
+  dplyr::select(MAP_LABEL)
+
+source(here::here('_functions', '_Transect_Functions.R'))
+
+```
+
+
+
+## Step 1. Generate Location Options for Paired Samples
+
+
+``` {r Paired Points, tidy = TRUE}
+
+## read in the points: 
+#sample_dir <- file.path(out_path, "transect_layout", "clhs_pts")
+
+# sample 1: 
+#sample_points <- st_read(file.path (sample_dir, "ESSFmc_1Transect.gpkg"), layer = "Points") %>%
+#  st_transform(3005)
+
+#sample_name = "heli_essfmc_"
+
+
+#sample 2: 
+
+#sample_points <- st_read(file.path (sample_dir, "ESSFmcw_2Transects.gpkg"), layer = "Points") %>%
+#  st_transform(3005) %>%
+#  filter(!is.na(Order))
+
+#sample_name = "heli_essfmcw_"
+
+
+# sample - Boundary : MSdm1 & IDFdm1
+#sample_points <- st_read(file.path (out_path, #"s2_MSdm1_IDFdm1_pts.gpkg")) %>%
+#  st_transform(3005)
+
+# Stage 1 : essf 
+out_path <- file.path(AOI.dir, "2_sample_design", "stage1_StudyDesign", "transect_layout") 
+
+#sample_points <- st_read(file.path (out_path,"essfdc2", "ESSFdc2_s1.gpkg"), layer = "ESSFdc2_s1") %>%
+#  st_transform(3005)
+
+# Stage 1 : ICH
+sample_points <- st_read(file.path (out_path,"ICHmk1", "BoundaryTSP_ICHmk1.gpkg"), layer = "points") %>%
+  st_transform(3005) %>%
+  mutate(bgc = "ICHmk1", 
+         type = "s1")
+
+
+
+sample_points <- sample_points %>%
+   mutate(id_no = seq(1, length(sample_points$bgc), 1)) 
+ 
+
+
+#ESSFmcw_2Transect.gpkg
+
+# First, create 8 cardinal-ordinal points and mask
+sample_points_clhs <- st_as_sf(sample_points) %>% 
+  st_transform(3005) 
+
+rotation_angles <- seq(0, 315, 45) # Rotation degrees 
+
+#sample_points_rotations <-  st_as_sf(sample_points) #sample_points_clhs[1,]
+sample_points_rotations <- st_sf(st_sfc()) %>% st_set_crs(3005)
+
+for(i in 1:nrow(sample_points_clhs)){
+#  i = 1
+  pnt <- sample_points_clhs[i,]
+  rotated_points <- pairedPoint(pnt, centroid_distance, rotation_angles)   # 8 points 400 m away
+  #rotated_points <- pairedPoint(pnt, 100, rotation_angles)
+  sample_points_rotations <- rbind(sample_points_rotations, rotated_points)
+}
+
+sample_points_rotations <- st_as_sf(sample_points_rotations, crs = 3005) %>%
+  mutate(rotation = mapvalues(Rotation, rotation_angles, c("N", "NE", "E", "SE", "S", "SW", "W", "NW"))) %>%
+  filter(!is.na(Rotation))
+  
+
+# format sample points : 
+
+sample_points_clhs <- sample_points_clhs %>%
+  mutate(rotation = "cLHS") %>%
+   #mutate(transect_id = paste0(sample_name, DropLoc ,"_", Order )) %>%
+  mutate(transect_id = paste0(bgc,"_", type, "_", id_no)) %>%
+  cbind(st_coordinates(sample_points_clhs$geom)) %>%   
+  dplyr::select(c(transect_id, bgc, id_no, rotation, X,Y)) %>%
+  st_drop_geometry() 
+
+sample_points_clhs <- st_as_sf(sample_points_clhs, 
+                                    coords = c("X", "Y"), 
+                                    crs = 3005)
+  
+sample_points_rotations <- sample_points_rotations %>%
+  #mutate(transect_id = paste0(sample_name, DropLoc,"_", Order )) %>%
+   mutate(transect_id = paste0(bgc,"_", type, "_", id_no)) %>%
+  cbind(st_coordinates(sample_points_rotations$geometry)) %>%   
+  dplyr::select(c(transect_id, bgc, id_no, rotation, X,Y)) %>%
+  st_drop_geometry() 
+  
+  
+sample_points_rotations <- st_as_sf(sample_points_rotations, 
+                                    coords = c("X", "Y"), 
+                                    crs = 3005)
+                                  
+all_points <- rbind(sample_points_clhs, sample_points_rotations)  %>%
+  mutate(id = paste(transect_id, rotation, sep = "_")) # This is all possible paired samples
+
+
+```
+
+## Step 8. Generate Transects Around cLHS and Paired Points
+
+The cLHS and paired points are used as the __centre point__ for the 250m-per-side transect triangles. For Stage 1 sampling, we rotate each of the transects randomly. Alternatively, optimized rotation to maximize diversity of the traverse can be applied for other purposes such as map improvement sampling (Stage 2).
+
+``` {r Create Triangles, tidy = TRUE}
+# Second, create triangle around each point and randomly rotate
+
+all_triangles <- st_sf(st_sfc()) %>% st_set_crs(3005)
+
+for(i in 1:nrow(all_points)){
+  #i = 1
+  poc <- all_points[i, ]
+ 
+  triangle <- Tri_build(id = poc$id, x =  st_coordinates(poc)[1], y =  st_coordinates(poc)[2])
+  random_rotation <- runif(1, min = 0, max = 360)
+  triangle <- rotFeature(triangle, poc, random_rotation)
+  
+  if(is.na(poc$rotation)){
+    triangle$id <- poc$id
+  } else {
+    triangle$id <- paste(poc$id, poc$rotation, sep = "_")
+  }
+  all_triangles <- rbind(all_triangles, triangle)
+}
+
+
+#all_triangles$id
+all_triangles <- all_triangles %>%
+  mutate(id = gsub("_N_N", "_N", id)) %>%
+  mutate(id = gsub("_S_S", "_S", id))%>%
+  mutate(id = gsub("_E_E", "_E", id))%>%
+  mutate(id = gsub("_W_W", "_W", id))%>%
+  mutate(id = gsub("_SE_SE", "_SE", id))%>%
+  mutate(id = gsub("_NE_NE", "_NE", id))%>%
+  mutate(id = gsub("_SW_SW", "_SW", id))%>%
+  mutate(id = gsub("_NW_NW", "_NW", id))%>%
+  mutate(id = gsub("_cLHS_cLHS", "_cLHS", id))
+
+all_triangles
+
+
+```
+
+
+
+## Step 9. Export Transects to QGIS for Field Maps
+
+Transects are uniquely labelled by Subzone-Slice.slice site number-Running number-Cardinal direction (e.g. SBSmc2_6-3_28_NW). Three shape files are exported for use in QGIS: Centre points, transect triangle, and 20m buffer polygon (field sampling boundary). Field maps for Avenza PDF maps are generated in QGIS or ARC. In QGIS, the Atlas function will generate a PDF for each unique point in the cLHS point file. We used a BING base layer (alternate is GOOGLE or orthphoto mosaic) and build QGIS styles to theme the transect and buffer. A map scale of 1:2 000 seems about right for field application. An overview PDF map of transect locations is required for route finding to the transects.
+
+``` {r Export, tidy = TRUE, echo=F, message = FALSE, include = FALSE}
+
+#transect_out_path <- file.path(out_path, "transect_layout")
+#transect_out_path <- file.path(out_path, "essfdc2")
+transect_out_path <- file.path(out_path, "ICHmk1")
+
+ifelse(!dir.exists(transect_out_path), dir.create(transect_out_path, recursive = TRUE), FALSE)
+
+#####write Transects####################
+
+st_write(all_points, file.path(transect_out_path, "s1_sampling.gpkg"), 
+         layer = "all_points", delete_layer = TRUE)
+
+st_write(all_triangles, file.path(transect_out_path, "s1_sampling.gpkg"),          layer = "all_transects", delete_layer = TRUE)
+
+####write buffer#########################
+triangle_buff <- st_buffer(all_triangles, dist = 10)
+
+st_write(triangle_buff, file.path(transect_out_path, "s1_sampling.gpkg"),
+         layer = "all_transects_buffered",#)
+         delete_layer = TRUE)
+
+
+clhs_points <- all_points %>%
+  filter(rotation == "cLHS")
+
+st_write(clhs_points, file.path(transect_out_path, "s1_sampling.gpkg"), 
+         layer = "clhs_points", delete_layer = TRUE )
+
+```
+
+
+```{r}
+
+### select the paired transect use the mask of acceptable area and bgc layers. 
+
+#sample_pts <- st_read(file.path(transect_out_path, "s2_sampling.gpkg"),          layer = "sample_points") %>%
+#  select(id) %>%
+#  pull(id)
+
+sample_pts <- st_read(file.path(transect_out_path, "s1_sampling.gpkg"),          layer = "sample_points") %>%
+  select(id) %>%
+  pull(id)
+
+sample_pts 
+
+sample_transects <- all_triangles %>%
+  mutate(sample = ifelse(id %in% sample_pts, 1, 0 )) %>%
+  filter(sample == 1) %>%
+  select(-sample)
+
+
+st_write(sample_transects, file.path(transect_out_path, "s1_sampling.gpkg"), 
+         layer = "sample_transects", delete_layer = TRUE )
+
+
+
+
+
+# generate a mask surface: 
+
+mask = list.files(mask_path, pattern = "_mask_poly.gpkg$")
+
+all_masks <- st_sf(st_sfc()) %>% st_set_crs(3005)
+
+for(m in mask){
+  #m = mask[1]
+  mm <- st_read(file.path(mask_path, m)) %>%
+    st_transform(3005)
+  
+  all_masks <- rbind(all_masks, mm)
+}
+
+unique(st_is_valid(all_masks))
+all_masks <- st_make_valid(all_masks)
+
+# check which rotations fall completely within the transect
+
+# filter for bgc units: 
+clhs_points <- all_points %>%
+  filter(rotation == "cLHS")
+
+
+
+
+
+
+# paired_points <- st_intersection(all_points, bgc.sf)
+# 
+# paired_points <- paired_points %>%
+#   group_by(id) %>%
+#   dplyr::summarize(n = n()) %>%
+#   filter(n == 2) %>%
+#   pull(transect_id)
+# 
+# 
+# paired_points <- paired_points %>%
+#   filter(rotation != "cLHS")
+# 
+# paired_points <- paired_points %>%
+#   mutate(remove_bgc = ifelse(bgc == MAP_LABEL, 0, 1)) %>%
+#   filter(remove_bgc == 0) %>% 
+#   select(-c(MAP_LABEL, remove_bgc))
+# 
+# paired_points <- st_intersection(paired_points, all_masks) %>%
+#   select(-c(acost))
+# 
+# 
+# library(dplyr)
+# paired_points_site_single <- paired_points %>%
+#   group_by(transect_id) %>%
+#   dplyr::summarize(n = n()) %>%
+#   filter(n == 1) %>%
+#   pull(transect_id) 
+# 
+# paired_points_single <- paired_points %>%
+#   filter(transect_id %in% paired_points_site_single) %>%
+#   select(-acost)
+# 
+# paired.pts <- bind_rows(clhs_points, paired_points_single)
+# 
+# paired_points_multiple_single <- paired_points %>%
+#   group_by(transect_id) %>%
+#   dplyr::summarize(n = n()) %>%
+#   filter(n == 2) %>%
+#   pull(transect_id)
+# 
+# paired_points_multi <- paired_points %>%
+#   filter(transect_id %in% paired_points_multiple_single)%>%
+#   group_by(transect_id) %>%
+#   slice_sample(1) %>%
+#   ungroup() %>%
+#   select(-c(acost))
+# 
+# paired.pts <- bind_rows(paired.pts, paired_points_multi)
+# 
+
+
+out_path <- file.path(AOI.dir, "2_sample_design", "stage2_StudyDesign", "transect_layout")
+
+all_points <- st_read(file.path(out_path, "s2_sampling.gpkg"),          layer = "all_points") 
+
+# write out csv tracking 
+
+
+  points.out <- all_points %>%
+    cbind(st_coordinates(all_points )) %>% 
+    dplyr::select(id, rotation, X,Y) %>% 
+    st_drop_geometry() %>% 
+    mutate(Surveyor = "", Date_Completed = "", Transect_comment = "") 
+  
+  write.csv(points.out, file.path(out_path, 
+                     # paste0(sample_name, 
+                             "s2_tracking_sheet.csv"))#)
+  
+
+

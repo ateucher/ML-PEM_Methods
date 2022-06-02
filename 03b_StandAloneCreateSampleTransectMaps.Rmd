@@ -1,0 +1,50 @@
+---
+title: "Adhoc Transect Map Creation"
+author: "Will MacKenzie and Gen Perkins"
+date: "20/09/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Step 7. Generate Location Options for Paired Samples
+
+```{r function}
+
+library(foreach)
+library(plyr)
+library(tidyverse)
+library(sf)
+require(here)
+source(here::here('_functions', '_Transect_Functions.R'))
+source(here::here('_functions', '_pem_create_maps.R'))
+
+
+#replacment_shp <-"Wetzinkwa_AOI/2_sample_design/stage1_StudyDesign/transect_layout/replacement_sites.shp"
+
+replacment_shp <-"DateCreek_AOI/2_sample_design/stage1_StudyDesign/transect_layout/replacement_site/replacement_sites.shp"
+
+
+ptCoords <- st_read(replacment_shp)  %>%
+  mutate(ID = id) %>%
+  dplyr::select(-c(fid, id))
+
+  
+pem_create_maps(ptCoords , "DateCreek_AOI/2_sample_design/stage1_StudyDesign/transect_layout/replacement_site")
+
+out_name <- "DateCreek_AOI/2_sample_design/stage1_StudyDesign/transect_layout/replacement_site"
+
+
+# Wills Version
+ptCoords <- fread("E:/PEM/DateCreek/ReplacementSites.csv") %>% as.data.frame
+#ptCoords <- data.frame(ID = 1, lat = 54.6920, long = -126.2930)
+pt <- st_as_sf(ptCoords, coords = c("long","lat"), crs = 4326)
+sample_points <- pt
+
+
+pem_create_maps(ptCoords , out_name = "Replacement_Transects")
+
+
+```

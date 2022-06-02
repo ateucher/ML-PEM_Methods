@@ -1,0 +1,1716 @@
+---
+title: "Stage 1 Sample Design for Training Point Generation and Internal Accuracy Assessment of Machine-learning Predictive Ecosystem Maps"
+subtitle: "by Will MacKenzie & Kiri Daust"
+Methods author: "Will MacKenzie"
+Script authors: "Kiri Daust; Will MacKenzie; Colin Chisholm; Gen Perkins, Matt Coghill" 
+date: "7/18/2019"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r global_options, include=FALSE}
+require(knitr)
+
+```
+
+
+```{r setup, include=FALSE}
+
+library(raster)
+library(sf)
+library(fasterize)
+library(gdistance)
+library(tidyverse)
+library(LearnGeom)
+library(stars)
+library(plyr)
+library(data.table)
+
+library(reticulate)
+#devtools::install_github("kdaust/clhs") 
+#devtools::install_github ("pierreroudier/clhs") 
+
+library(clhs)
+library(foreach)
+
+```
+
+
+## Introduction
+
+This document describes a Stage 1 field sampling strategy for application in machine-learning based predictive ecosystem map development.  The objectives of this sample design is to provide an efficient method for collection of unbiased field data for two applications: base-line training point sampling and internal accuracy assessment of the PEM map. 
+
+A optimal sample strategy will balance requirements to be unbiased and statistically sound, to adequately sample the environmental space of the map area, to allow a scaleable number of samples to be selected in the design, and be as cost-efficient as possible.  To meet these competing requirements we apply a cost-constrained, sliced, conditional Latin Hypercube Sample (cLHS) approach based on landscape scale environmental variables to position paired equalateral triangle transects for line-intercept collection of information following a modified Moon et al. methodology.
+
+As the first stage of field data collection, the protocol is not based on existing site series mapping or presumed stand-level variables of importance. The conditioned Latin hypercube sample is based on landscape-scale and geographic variables to ensure coverage of broad physiographic and macroslope position in the map area. We propose to use a simplified Moon method to collect the transect data. The specific field methods are described in .....  In this approach, equilateral transects are traversed and changes from one ecosystem type to another marked along the transect. The GPS tracklog of the field-traverse is smoothed, buffered, and split into segments that designate a band of rasters reflective of individual map units.
+
+These buffered line-intercept data will be used both a source of training points and for an internal accuracy assessment. A ratio of transects will be used for training point generation to build the map (70%) while the remainder will be used as AA polygons to test the accuracy of the modelled map. A boot-strapping procedure using different sets of transects to build and assess the model will provide a measure of variance for the accuracy.
+
+1. For training point generation, rasters falling within the buffered line-intercept polygons representing each map unit will be used as a population from which a cLHS sample will be taken for use as training points representing the map unit in the randomforest model.   
+
+2. For the internal AA, an overlay of a complete transect polygon over the PEM map will provide percent agreement statistics as per Moon. 
+
+Stage 1 field sampling from this method is intented to provide core unbiased information for both of these tasks. This method will be most successful in sampling the common matrix ecosystems but may not satisfactorily sample or evaluate uncommon and small-patch ecosystems.  It is expected that additional training point data collection by other approaches be conducted concurrently or in the Stage 2:map improvement phase which may involve purposeful sampling of poorly sampled map units, additional transects in areas of high map uncertainty, etc.  These various "map-improvement" approaches to improving the training point data set will be laid out in Stage 2 sampling.
+A Stage 1 air photo sampling protocol is outlined in.... This protocol is primarily designed for sampling small-patch ecosystems that are easily distinguishable for airphotos. 
+
+## Main Steps to the Stage 1 Field Sampling Strategy
+
+The script below generates a cLHS of points around which field transects are generated for use in field data collection PDF maps. 
+
+There flow of the script follows these steps:
+
+1. Create cost layer based on relative ease of access and to minimize sampling of recently cleared stands.
+2. Select and generate a limited list of broadly defined landscape-scale spatial layers for use in the cLHS.
+3. Create an exclusion layer of areas that should not be sampled, such as roads, lakes, etc.
+4. Determine an optimal number of cLHS points required to fill the environmental space.
+5. Create a raster stack of spatial and cost layers and mask with the exclusion layer.
+6. Create a sliced cLHS of 5 sample points per slice.
+7. Generate possible paired sample points adjacent to the cLHS samples at each cardinal and ordinal direction and remove those points falling outside the masked raster stack area.
+8. Generate 750m equilateral triangle transects with the cLHS as centre points, rotate transects randomly, create 10m transect buffer layer.
+9. Export 3 shape files into QGIS, underlay BING or other high-resolution imagery and generate 1:2 000 field sampling maps in QGIS using Atlas function for each transect.
+
+Many of these algorithms are based on and adapted from those described in Malone et al (2019). 
+
+
+## Step 1. Build Cost Layer
+
+## NOTE THIS SECTION NEEDS TO BE UPDATED WITH KIRI"s updated version in PEM_TSA_github
+
+
+An accumulated cost surface is generated from the 25m DEM base. We used the Digital Road Atlas layer clipped to the study area to identify road and trail access.
+Each 25m raster traversed was assigned the following costs:
+
+  * any driveable roads = 0;
+  * "quad-able"" tracks = 2.5
+  * normal ground = 33
+  * sloping ground increased by 1 for each % slope grade > 25%
+
+***to update.
+  * any driveable roads = .0003125 = time/25m pixel at 80km/hr;
+  *non primary roads = .000625 (40km/hr)
+  * "quad-able"" tracks = .00125 (20km/hr)
+  * walking trails and roads = .00833 (3km/hr)
+  * walking old forest and young clearcut = .0125 (2 km/hr)
+  * walking young plantation (20-60) = .01667 (1.5 km/hr)
+  ** sloping ground multiplier for every walking coast additional % slope greater 25% (1+((slope-25)*.02) (e.g. clearcut at 40% = 0.01625 )
+  
+  * points may also be placed that represent helicopter landing areas. These may be given a zero cost where helicopter access is already part of the field sample plan, or a cost that attempts to place points by road initially but will apply helicopter points only where the costs by road become excessive
+
+The assignment of these cost values is heuristic but the setting above place points that equate well with the arbitary 250m road buffers applied in the first year sampling protocol.
+Buffered clearcuts are now assigned a high cost to limit the number of transects which overlap cutover areas, but to allow the variable space occupied by clearcuts to be included in the calculations of the cLHS. Clearcuts are currently assigned a weight of 3000.
+
+
+```{r setup user directories}
+# input parameters
+
+AOI <- "Deception"
+#AOI <- "BoundaryTSA"
+#AOI <- "DateCreek"
+#AOI <- "WilliamsLake"
+#AOI <- "OldFort"
+#AOI <- "Baboon"
+#AOI <- "Buck"
+#AOI <- "Wetzinkwa"
+#AOI <- "PeterHope"
+
+map_res <- 25 # Defines resolution of map to use for cLHS
+transect_length <- 250 # Define the length of triangle on each side
+
+use_heli <- FALSE # Determines whether there are helicopter accessible points that can be used for sampling. 
+
+map_res_character <- paste0(map_res, "m")
+AOI.dir <- file.path(paste0(AOI, "_AOI"))
+shapes_path <- file.path(AOI.dir, "0_raw_inputs", "base_layers")
+raster_path <- file.path(AOI.dir, "1_map_inputs", "covariates", map_res_character)
+#raster_path <- file.path(AOI.dir, "1_map_inputs", "covariates", paste0(map_res_character, "_trim")) # williams Lake 
+out_path <- file.path(AOI.dir, "2_sample_design", "stage1_StudyDesign")
+sampling_raw_folder <- file.path(out_path, "input_raster")
+clhs_outpath <- file.path(out_path, "clhs_sample_plans")
+
+
+# nearest towns 
+# date creek - Hazelton
+# baboon - Houston 
+# old fort - smithers
+
+nearest_town = "Smithers" 
+#nearest_town = "Houston" 
+#nearest_town = "Kamloops"
+#nearest_town = "Hazelton"
+
+# if(AOI == "DateCreek") {
+#   
+#   nearest_town = "Hazelton" 
+# 
+#   } else if (AOI == "WilliamsLake") {
+#   
+#   nearest_town = "100 Mile House" 
+#   
+#   } else if(AOI == "BoundaryTSA"){
+#     nearest_town = "Grand Forks"
+# }
+
+
+# radius of exclusion around points to prevent overlap of secondary transects
+centroid_distance <- 400
+
+## Gives the minimum distance cLHS points will be located
+rad_exclusion <- 1000
+#num_slices <- round(num_samples/slice_size)
+
+```
+
+
+```{r source transect functions}
+
+#source_python(here::here('_functions',"mTSP_road.py")) #kiri script for boundaryTSP.r
+#source_python(here::here('_functions',"mTSP.py"))   # function for roadTSP.r (not including road limiting portion)
+source(here::here('_functions', '_Transect_Functions.R'))
+
+# if you get a python install error type the following into the terminal console:
+# pip install 'ortools'
+
+```
+
+# Generate a movement cost layer and a sampling cost layer
+
+```{r Cost Setup, tidy = TRUE, warning=FALSE}
+
+# check if cost layer aleady generated if not a cost layer will be generated
+
+if(file.exists(file.path(out_path, "input_raster", "acost.tif"))) {
+  
+  acost <- raster(file.path(out_path, "input_raster", "acost.tif"))
+  sample_cost <-raster(file.path(out_path, "input_raster", "sample_cost.tif")) 
+  # read in transition layer 
+  tr1 <- readRDS(file = file.path(out_path, "input_raster","transition_layer.rds"))
+
+  
+} else {
+
+# read in dem for template raster
+alt <- raster(file.path(raster_path, "dem.tif")) #williams lake
+#alt <- raster(file.path(raster_path, "dem_ls.tif")) # Boundary 
+template <- raster(file.path(raster_path, "template.tif"))
+#template <- raster(file.path(raster_path, "aspect.tif"))  
+
+
+## read in roads and assign cost per road type
+roads <- st_read(file.path(shapes_path, "road_surroundings.gpkg")) %>% # Boundary
+   st_zm()
+
+roads$ROAD_CLASS[roads$trail == 1] <- "trail"
+roads <- roads[,c("ROAD_SURFA","ROAD_CLASS", "ROAD_NAM_7")]
+roads <- roads[roads$ROAD_SURFA != "overgrown",]
+roads <- roads %>% dplyr::rename('road_surface' = ROAD_CLASS, 
+                                   'surface' = ROAD_SURFA, 
+                                   'name' = "ROAD_NAM_7")
+rdsAll <- as.data.table(roads) %>% st_as_sf()
+  
+# assign speed codes
+rSpd <- tibble(
+    "road_surface" = c("resource", "unclassified", "recreation", "trail", "local", "collector", "highway", "service", "arterial", "freeway", "strata", "lane", "private", "yield", "ramp", "restricted", "water", "ferry"),
+    "speed" = c(30, 30, 50, 4.5, 50, 80, 80, 50, 80, 80, 30, 30, 4.5, 30, 60, 4.5, 0.1, 0.1))
+  
+rSpd <- as.data.table(rSpd)
+rdsAll <- merge(rdsAll, rSpd, by = "road_surface", all = F)
+rdsAll <- rdsAll[,"speed"]
+allRast <- raster(rdsAll, resolution = 25)
+  
+# create a roads raster (buffered)
+rdsAll <- st_buffer(rdsAll, dist = 25, endCapStyle = "SQUARE", joinStyle = "MITRE")
+rdsAll <- st_cast(rdsAll, "MULTIPOLYGON")
+rdsRast = fasterize(rdsAll, allRast, field = "speed")
+
+## prep dem for transtion layer             
+## read in water layer and convert to raster, convert water to 0 in altitude layer
+## this will ensure movement is not allowed over water objects(river,lakes) 
+
+water <- st_read(file.path(shapes_path, "water.gpkg")) %>%
+   dplyr::filter(WATERBODY_TYPE != "W") %>%
+   dplyr::mutate(cost = 10000) %>%
+   st_cast("MULTIPOLYGON") %>%
+   dplyr::select(cost)
+   
+water_r <- fasterize(water, alt, field = "cost")
+alt[water_r] <- 0
+
+#writeRaster(alt, file.path(out_path,"input_raster", "alt.tif"), format = "GTiff", overwrite = TRUE) 
+
+# align the dem and merge to full size of raster (extend past AOI to include roads)
+alt2 <- projectRaster(alt, rdsRast, method = 'ngb')
+altAll <- merge(rdsRast, alt2)
+
+# set the threshold in which to determine the slope calculations vs road travel calculation in the transition layer. This may need to be adjusted depedning on terrain. 
+
+alt.threshold <- 250 # Date Creek 
+  
+trFn <- function(x){
+    if(x[1] > alt.threshold & x[2] > alt.threshold){
+      x[1]-x[2]
+    }else{
+      min(x[1],x[2])
+    }
+}
+
+# identify the areas treated as road and those to be calculatd for slope
+rdIdx <- which(values(altAll) < 100)            # road index
+slpIdx <- which(values(altAll) > alt.threshold) # slope index
+#rdAdj <- adjacent(altAll, cells = rdIdx, pairs = T, directions = 8)
+adj <- adjacent(altAll, cells = slpIdx, pairs = T, directions = 8)
+adj <- adj[!adj[,1] %in% rdIdx ,]
+adj <- adj[!adj[,2] %in% rdIdx ,]
+    
+# calculate the altitude difference
+tr <- transition(altAll, trFn , directions = 8, symm = F) ##altDiff and speed (km/h)
+#convert to slope  i.e. altitude diff / distance travelled
+tr1 <- geoCorrection(tr) ##divided by 25 - slope and conductance (km/h/m)
+    
+#plot(raster(tr1))
+    
+# apply Toblers hiking function to the slope areas 
+tr1[adj] <- (3/5)*(6*exp(-3.5*abs(tr1[adj] + 0.08))) ##tobler's hiking function * 3/5 - gives km/h
+tr1 <- tr1*1000 ##now roads are correct conductance (h/m), and walking in m/h
+tr2 <- geoCorrection(tr1) ##have to geocorrect this part again
+tr1[adj] <- tr2[adj] ##tr1 values are now all conductance in h/metre
+ 
+#plot(raster(tr1))
+# output transition layer to use in creating TSP paths
+saveRDS(tr1, file.path(out_path,"input_raster", "transition_layer.rds"))
+   
+
+#nearest_town <- "Houston" 
+
+if(AOI == "BoundaryTSA") {
+# Shift the location of  Grand forks to align with roads 
+my.df <- read.table(text=" x    y
+                    1553304    475488", header = TRUE)
+start <- st_as_sf(my.df, coords = c("x","y"),
+                  crs = 3005) %>%
+  as("Spatial")
+
+} else {
+# Boundary towns - Grand Forks, Midway, Greenwood    
+cities <- st_read(file.path(shapes_path, "major_towns.gpkg"))
+start <- cities[cities$NAME == nearest_town,"NAME"]%>% 
+    as("Spatial")
+
+}
+
+# calculate the cost layer for travel  
+acost <- accCost(tr1, start)
+plot(acost)
+acost[acost >3000]<- NA
+
+writeRaster(acost, file.path(out_path,"input_raster", "acost.tif"), format = "GTiff", overwrite = TRUE)
+  
+# Generate a sampling cost layer
+
+# Assigned the high costs to cutblocks, private land class 1-3, fire /fire intensity. This maintains the aras within the clhs sample area, but will deter the samples from being placed in these areas. 
+
+# 1. Assign high cost for cutblocks 
+cutblock_prep <- st_read(file.path(shapes_path,
+                                "cutblocks.gpkg")) %>%
+ # "cutblocks_ften.gpkg")) %>%
+   st_set_crs(3005) %>%
+   mutate(cost = 3000) %>%
+   dplyr::select(cost) %>%
+   st_buffer(dist = 150) %>%
+   st_cast("MULTIPOLYGON")
+
+ cutblks <- fasterize(cutblock_prep, acost, field = "cost")
+ 
+# 2. Assign high cost to age class 1 and 2 
+ vri_class <- st_read(file.path(shapes_path, "vri_class1_2.gpkg")) %>%
+   st_set_crs(3005) %>%
+   mutate(cost = 3000) %>%
+   dplyr::select(cost) %>%
+   st_buffer(dist = 150) %>%
+   st_cast("MULTIPOLYGON")
+
+ vri_class_r <- fasterize(vri_class, acost, field = "cost")
+ forest_exclude <- merge(cutblks, vri_class_r)
+ 
+# 3. Assign a slightly lower cost to age class 3. 
+ vri_class3 <- st_read(file.path(shapes_path, "vri_class3.gpkg")) %>%
+   st_set_crs(3005) %>%
+   mutate(cost = 2500) %>%
+   dplyr::select(cost) %>%
+   st_buffer(dist = 150) %>%
+   st_cast("MULTIPOLYGON")
+
+ vri_class3_r <- fasterize(vri_class3, acost, field = "cost")
+ forest_exclude <- merge(forest_exclude, vri_class3_r)
+ 
+ # for some AOIS; 
+ # 3a Assign a high cost to deciduous leading species area 
+ vri_decid <- st_read(file.path(shapes_path, "vri_decid.gpkg")) %>%
+   st_set_crs(3005) %>%
+   mutate(cost = 3000) %>%
+   dplyr::select(cost) %>%
+   st_buffer(dist = 150) %>%
+   st_cast("MULTIPOLYGON")
+
+ vri_decid_r <- fasterize(vri_decid, acost, field = "cost")
+ forest_exclude <- merge(forest_exclude, vri_decid_r)
+ 
+ 
+ 
+ 
+# 4. Assign high cost to private lands 
+ private <- st_read(file.path(shapes_path, "private.gpkg")) %>%
+   st_set_crs(3005) %>%
+   mutate(cost = 3000) %>%
+   dplyr::select(cost) %>%
+   st_buffer(dist = 150) %>%
+   st_cast("MULTIPOLYGON")
+ 
+ private_r <- fasterize(private, acost, field = "cost")
+
+ sample_cost <- merge(forest_exclude, acost)
+ sample_cost <- merge(private_r, sample_cost)
+ 
+# Add high cost for high and medium intensity fire areas or all fires 
+fires <- st_read(file.path(shapes_path, "fire_int.gpkg")) %>%
+   st_set_crs(3005) %>%
+   mutate(cost = 3000) %>%
+   dplyr::select(cost) %>%
+   st_buffer(dist = 150) %>%
+   st_cast("MULTIPOLYGON")
+ 
+# ## OR REMOVE ALL FIRE AREAS 
+# 
+#  fires <- st_read(file.path(shapes_path, "fire.gpkg")) %>%
+#    st_set_crs(3005) %>%
+#    mutate(cost = 3000) %>%
+#    dplyr::select(cost) %>%
+#    st_buffer(dist = 150) %>%
+#    st_cast("MULTIPOLYGON")
+ 
+fires_r <- fasterize(fires, acost, field = "cost")
+sample_cost <- merge(fires_r, sample_cost)
+
+# Add high costs to the existing travel cost layer and assign NA above (to remove extreme outliers outside the AOI) 
+sample_cost[sample_cost >3000]<- NA
+ 
+writeRaster(sample_cost, file.path(out_path, "input_raster","sample_cost.tif"), format = "GTiff", overwrite = TRUE)
+
+}
+
+```
+
+
+## Step 2. Select and Stack Spatial Data Layers for cLHS
+Spatial layers from the 25m raster set were used in the cLHS. Three raw continuous variables were included in the cLHS : Elevation, Latitude, Longitude. 
+In addition, three derived 25m variables were used as categorical variables::
+  + MRVBF classes were used with an initial starting slope of 64, with lower slope threshold = 6 and upper slope = 2. These setting provided good differentiation of the entire landbase compared to the default settings which emphasize areas of sediment deposition in lower slope positions only.
+  + The default Land Form Class derived from TPI and TRI metrics was applied but was sieved to 4 rasters to remove small raster clusters.
+  + Diurnal anisitropic heating was converted into three classes reflecting cold, warm, and neutral slopes. The cut-offs were for cool were < -0.2 and for warm >0.2
+
+These variables are largely uncorrelated with each other. Topographic Wetness was suggested as a variable for use but correlates highly with MRVBF and also does not produce large landscape level units but operates at a stand level: not included.
+
+```{r Create BaseLayer stack, echo=F}
+# read in and stack landscape scale covariates 
+  
+  anc_layers <- c("dah_3class.tif", "mrvbf_LS_s.tif", "landform_stt.tif") 
+  #anc_layers <- c( "dah_LS.tif", "mrvbf_LSs.tif","lfclass_st.tif")
+  layerNames <- c("DAH","MRVBF","LFC") 
+
+  covars <- file.path(raster_path, anc_layers)
+  ancDat <- raster::stack(covars)
+  names(ancDat) <- layerNames
+  
+```
+
+## Step 3. Create Exclusion Layer of No-Sample Areas
+
+We are placing cLHC locations as centre points for 250m per-side transect triangles. The radius of a circle that will encompass and rotation of the triangle is 144m. We mask the spatial layers with an exclusion layer created from buffering features we do not wish to traverse by this radius. cLHS this masked spatial layer ensures that the placement of centre points from the cLHS will not result in traverses overrunning unsampleable lakes, roads, etc.  
+We apply a buffer around roads to 175m to account for any wider right-of-ways. 
+
+```{r Cost Buffer, tidy = TRUE}
+# Generate mask for areas not to be sampled (lakes, and permanently changed landscape i.e roads then add bgc buffer for each of the bgcs
+  
+# 1) areas to be excluded from environmental sample space: 
+water <- st_read(file.path(shapes_path, "water.gpkg")) %>%
+  dplyr::filter(WATERBODY_TYPE != "W")
+water_buff <- st_buffer(water, dist = 150) # lakes
+
+roads <- st_read(file.path(shapes_path, "roads_vetted.gpkg")) %>%
+  st_transform(3005)
+roads_buff <- st_buffer(roads, dist = 175) # roads
+roads2 <- st_read(file.path(shapes_path, "road_surroundings.gpkg")) %>%
+  st_transform(3005)
+roads1 <- bind_rows(roads, roads2)
+roads_buff <- st_buffer(roads1, dist = 175) # roads
+
+# create accumulated sample cost mask 
+sample_cost_masked <- mask(sample_cost, roads_buff, inverse = TRUE) %>% 
+  mask(water_buff, inverse = TRUE)
+
+# match to orginal extent of acost
+sample_cost_masked <- crop(sample_cost_masked, ancDat)
+sample_cost_masked = resample(sample_cost_masked, ancDat, "bilinear")
+
+## Add the specific bgc mask and generate per BGC 
+
+#boi <- c("IDF xh 2", "IDF dk 1") # peterHope
+#boi <- c("SBS mc 2","ESSFmc") # buck
+#boi <- c("ICH mc 1", "ESSFwv","SBS mc 2","ESSFmc") # Wetzinkwa
+#boi <- c("SBS mc 2") # oldfort # baboon
+#boi <- c ("ICHmw5", "ESSFmh", "MSdm1", "IDFdm1") # Boundary 
+#boi <- c ("SBSmc2", "ESSFmcw", "ESSFmc") # Deception 
+boi <- c ("ICH mc 2", "ICH mc 1", "ESSFwv") # Date Creek
+#boi <- c ("IDF dk 3", "IDF xw", "MS  xk 2") # Williams Lake
+#boi <- c ("ESSFdc 1", "ICH dw 1", "ICH mk 1","IDF dh","ESSFdc 2", "ICH xw","ICH xw  a") # Boundary
+
+for (b in boi) {
+  #b = boi[1]
+  
+  subzone <- st_read(file.path(shapes_path, "bec.gpkg")) %>%
+    #st_cast("GEOMETRYCOLLECTION") %>%
+    #st_collection_extract("POLYGON") %>%
+    dplyr::filter(BGC_LABEL %in% b) #%>%
+    #st_union()
+    #dplyr::filter(BGC_LABEL %in% c("ICH xw  a", "ICH xw"))
+  
+  subzone_buff <- st_buffer(subzone, dist = -150)
+  
+  boi_mask <- mask(sample_cost_masked, subzone_buff)
+  names(boi_mask) = 'cost'
+  
+  # write out the exclusion mask 
+  writeRaster(boi_mask, file.path(out_path, "input_raster", paste0(b,"_exclude_mask.tiff")), overwrite = TRUE)  
+  
+  
+  # write out polygon version for faster processing 
+   
+  mask_poly_boi <- 1 + (boi_mask *0) %>% st_as_stars(., crs = st_crs(3005))
+   
+   mask_poly_boi <- st_as_sf(mask_poly_boi, as_points = FALSE, merge = TRUE, na.rm = TRUE, use_integer = TRUE)
+  
+ st_write(mask_poly_boi, file.path(out_path, "input_raster",paste0(b, "_exclude_poly.gpkg")), delete_layer = TRUE)
+ 
+}
+
+```
+
+## Step 6. Run Cost-Constrained Sliced cLHS
+
+A cLHS can now be run on this constrained sample space and any point selected will be support a valid transect no matter the rotation. 
+cLHS sets are generated for each subzone individually.
+We apply a minimum 1000m spacing between cLHS points to prevent possible overlap of paired transects.
+  
+We created five cLHS 'slices' of 5 sites (n=25) for sampling. Each slice represents a cLHS independently so all sites from a slice must be sampled. Strictly speaking the slices must be sampled in order to maintain LHS structure as well (i.e. 1 + 2 + 3 = LHS but 1 + 2 + 4 may not be LHS). A progressive cLHS procedure has been proposed that makes any combination of slices maintain LHC structure.
+
+Additional new cLHS slices can be created after the generation of the original run using the 'include' parameter in the cLHS function. Where sampling may involve helicopter access, additional slices could be added using a cost layer where landable clearings rather than roads are the zero cost starting points.
+
+```{r}
+# generate slices clhs per bgc to generate sample points - where there are no prvios points to consider. Use this script when starting from scratch. 
+
+# Note if you have points that were previously used that you want to incorporate into an already set up structure then see code below. 
+
+
+clhs_outpath <- file.path(out_path, "clhs_sample_plans")
+ifelse(!dir.exists(clhs_outpath), dir.create(clhs_outpath, recursive = TRUE), FALSE)
+
+#boi <- c ("ICH mc 2", "ICH mc 1")# "ESSFwv") # Date Creek
+#boi <- "ESSFwv"
+#boi <- c("ESSFdc 1",  "ICH dw 1",  "ICH mk 1") # 15 sites - Greenwood/Grandforks
+#boi <- c("ICH xw", "ICH xw  a")                # 15 sites - Grandforks
+#boi <- "ESSFdc 2"                              # 10  - Oliver
+#boi <- "IDF dh"                                # 10  - Grandforks
+
+#boi <- "ICH xw_total"
+
+for (b in boi) {
+ # b <- boi[3]
+  
+  boi_mask <- raster(file.path(out_path, "input_raster", paste0(b,"_exclude_mask.tif"))) 
+  names(boi_mask) = "cost"
+
+  sample_layers_masked <- stack(ancDat, boi_mask) %>%  # add cost surface to stack
+  raster::mask(boi_mask) # mask by buffered cost surface
+
+  for(rot in 1:10){
+    
+ # rot <- 1
+
+  # generate clhs points
+  paired_distance <- 100
+  num_samples <- 5
+  slice_size <- 5
+  rerun <- 0
+  num_slices <- round(num_samples/slice_size)
+  # 
+  lays <- sample_layers_masked 
+  # lays_df <- as.data.frame(lays)
+  # lays_df$DAH <- as.factor(lays_df$DAH)
+  # lays_df$MRVBF <- as.factor(lays_df$MRVBF)  
+  # lays_df$LFC <- as.factor(lays_df$LFC)  
+  # lays_df$num <- 1
+  # 
+  
+  # create a empty sf object and add points
+  tmp <- st_sfc()
+  class(tmp)[1] <- "sfc_POINT" # for points
+  sample_points <- st_sf(DAH=integer(0),
+                     MRVBF=integer(0),
+                     LFC = integer(0),
+                     cost=integer(0),
+                     slice_num = integer(0), geometry=tmp)%>%
+   st_set_crs(3005)
+  
+ 
+  for(i in 1:num_slices){ # For each slice, perform cLHS (if there is sampleable area left from previous slices)
+    # i <- 1
+    if(nrow(sample_points) < slice_size*i){
+      
+      clhs_slice <- clhs(lays,
+                         size = slice_size,
+                         iter = 100000,
+                         simple = FALSE,
+                         progress = TRUE,
+                         cost= "cost",
+                         use.cpp = T) # Run cLHS on the sampleable area
+      
+      clhs_sampled <- st_as_sf(clhs_slice$sampled_data) %>%
+        mutate(final_obj_continuous = clhs_slice$final_obj_continuous) %>% 
+        mutate(slice_num = i)
+      
+      for(j in 1:nrow(clhs_sampled)){ # Filter the close together samples from the cLHS run
+       # j = 1
+        if(!is.na(clhs_sampled[j, ])){
+          distances <- data.frame(distance = st_distance(clhs_sampled, clhs_sampled[j, ])) %>%
+            rownames_to_column() %>%
+            mutate_all(as.numeric) %>%
+            dplyr::filter(distance > rad_exclusion | distance == 0)
+          clhs_sampled <- clhs_sampled[distances$rowname, ]
+        }
+      }
+      
+      # if number of sites is less than selected add a interator and this clhs willl be re-run using the repeat loop below  
+      if(length(clhs_sampled$slice_num)< slice_size){
+        rerun <- rerun + 1 
+        #sample_points
+        print("points selected are less than sizes less than selected, re-running clhs")
+      } else { 
+  
+      # if correct number of samples is selected then continue to next slice 
+        
+      clhs_sampled_buff <- st_buffer(clhs_sampled, dist = rad_exclusion) # Extract and buffer the cLHS points
+      lays <- mask(lays, clhs_sampled_buff, inverse = TRUE)      # Mask the sampleable area
+      sample_points <- bind_rows(sample_points, clhs_sampled) 
+      }
+    }
+  }  
+  
+sample_points
+
+# if any of the runs do not contain the full number of samples then we will run more clhs in a loop until they contain the full number required 
+
+if (rerun > 0) {
+
+  tmp <- st_sfc()
+    class(tmp)[1] <- "sfc_POINT" # for points
+    sample_points_extra <- st_sf(DAH=integer(0),
+                     MRVBF=integer(0),
+                     LFC = integer(0),
+                     cost=integer(0),
+                     slice_num = integer(0), geometry=tmp)%>%
+    st_set_crs(3005)
+
+
+  for(re in 1:rerun) {
+  #re = 1
+  repeat{
+     clhs_slice <- clhs(lays,
+                         size = slice_size,
+                         iter = 100000,
+                         simple = FALSE,
+                         progress = TRUE,
+                         cost = "cost",
+                         use.cpp = T) # Run cLHS on the sampleable area
+
+      clhs_sampled <- st_as_sf(clhs_slice$sampled_data) %>%
+        mutate(final_obj_continuous = clhs_slice$final_obj_continuous) %>%
+        mutate(slice_num = slice_size + re)
+
+      for(j in 1:nrow(clhs_sampled)){ # Filter the close together samples from the cLHS run
+       # j = 1
+        if(!is.na(clhs_sampled[j, ])){
+          distances <- data.frame(distance = st_distance(clhs_sampled, clhs_sampled[j, ])) %>%
+            rownames_to_column() %>%
+            mutate_all(as.numeric) %>%
+            dplyr::filter(distance > rad_exclusion | distance == 0)
+          clhs_sampled <- clhs_sampled[distances$rowname, ]
+        }
+      }
+      if(length(clhs_sampled$cost)== slice_size){
+        print("correct number of pts generated")
+        sample_points_extra <- sample_points_extra 
+          st_crs(sample_points_extra) <- 3005
+        sample_points_extra <- rbind(clhs_sampled, sample_points_extra)
+        clhs_sampled_buff <- st_buffer(sample_points_extra, dist = rad_exclusion) # Extract and buffer the cLHS points
+        lays <- mask(lays, clhs_sampled_buff, inverse = TRUE)      # Mask the sampleable area for the next clhs repeat (only if successful!)
+
+        break # stop the repeat clhs loop if corect number achieved
+      }
+      # if the number is still less than required repeat the above code until correct number is produced
+      print("rerunning clhs")
+    }
+  } # repeat for number of reruns required
+
+  sample_points <- bind_rows(sample_points, sample_points_extra )
+} # end of extra repeats to add
+
+xx <- sample_points
+sample_points <- xx
+
+#rownames(sample_points) <- NULL
+sample_points$subzone <- b
+unique_slices <- as.data.frame(table(sample_points$slice_num))
+unique_slices$order =  seq(1:num_slices)
+unique_slices$Var1 = as.numeric(as.character(unique_slices$Var1))
+
+sample_points <- sample_points %>%
+  left_join(unique_slices, by = c("slice_num" = "Var1")) %>%
+  dplyr::select(-c(Freq, slice_num)) %>%
+  dplyr::rename(slice_num = order) %>%
+  arrange(slice_num)
+#sort(sample_points$slice_num)
+
+unique_slices <- as.data.frame(table(sample_points$slice_num))
+
+for(i in 1:length(unique(sample_points$slice_num))){ # Adds appropriate slice number
+  j <- unique(sample_points$slice_num)[i]
+  if(j == unique_slices[i, 1]){
+    j <- which(sample_points$slice_num == as.numeric(j))
+    for(k in 1:length(j)){
+      l <- j[k]
+      sample_points[l, "slice_size"] <- k
+    }
+  }
+}
+
+sample_points <- mutate(sample_points, total = 1:nrow(sample_points)) %>% 
+  mutate(id = paste0(subzone, "_", slice_num, ".", slice_size, "_", total)) %>%
+  dplyr::select(names(.)[!(names(.) %in% names(lays))])
+
+st_write(sample_points, dsn = file.path(clhs_outpath, paste0("clhs_pts",rot,"_", b,".gpkg")), append = T, driver = "GPKG")  
+#sample_points
+
+ } # end of rotation toc()
+} # end of bgc loop
+
+```
+
+# Select the sample plan with the lowest cost  
+
+Once the clhs points are run, we can assess the cost and pick the lowest cost option or the user can manually review the outputs and then decide on the most favorable option.
+
+
+```{r}
+acost <- raster(file.path(out_path, "input_raster", "acost.tif"))
+sample_cost <- raster(file.path(out_path,"input_raster", "sample_cost.tif"))
+
+ftemp <- list.files(clhs_outpath, pattern = ".gpkg$", full.names = TRUE)
+#ftemp <-ftemp[c(4,5,6,7,8,9)]  # 9,2,10
+costs <- stack(acost, sample_cost)
+#ftemp <- ftemp[1]
+
+all_samples <- foreach(fs = 1:length(ftemp), .combine = "rbind" ) %do% {
+  
+ff <- ftemp[fs]
+   
+# read in all the points per bgc, collate and assign value based on travel cost
+ 
+layers <- st_layers(ff)$name
+
+sample_points_all <- foreach(l = 1:length(layers), .combine = rbind) %do% {
+  ll = layers[l]
+  sptemp <- st_read(ff, layer = ll)
+  sptemp <- sptemp %>%
+    dplyr::mutate(clhs_repeat = basename(ff))
+  sptemp
+  }
+
+}
+
+all_cost <- raster::extract(costs ,as(all_samples, "Spatial"))
+all_samples <- all_samples %>%
+  cbind(all_cost)
+
+# summarise the costs per sample plan
+repsum <- all_samples %>%
+  st_drop_geometry() %>%
+  select(clhs_repeat, subzone, acost, sample_cost)
+
+repsum <- repsum %>%
+  group_by(clhs_repeat, subzone) %>%
+  dplyr::mutate(tcost = sum(acost),
+         scost = sum(sample_cost),
+         no = n()) %>%
+  dplyr::select(- acost, -sample_cost) %>%
+  distinct()
+
+# plot the total costs by subzone
+
+p1 <- ggplot(repsum, aes(y = tcost, x =  clhs_repeat )) +
+  geom_point()+
+  facet_wrap(~subzone)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p1
+
+# p1s <- ggplot(repsum, aes(y = scost, x =  clhs_repeat )) +
+#   geom_point()+
+#   facet_wrap(~subzone)+
+#   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+# 
+# p1s
+
+p2 <- ggplot(repsum, aes(y = tcost, x =  clhs_repeat, colour = subzone )) +
+  geom_point()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) + 
+    geom_text(aes(label = no), position = position_dodge(0.5))
+  
+p2
+
+# plot the types of costs (total bgcs combined)
+totsum <- repsum %>%
+  group_by(clhs_repeat)%>%
+  dplyr::mutate(tcost = sum(tcost),
+         scost = sum(scost)) 
+
+# select the lowest cost sample plan: 
+clhs_set <- totsum %>%
+  filter(tcost == min(totsum$tcost)) %>%
+  pull(clhs_repeat) %>%
+  unique()
+
+print(clhs_set)
+
+
+
+#### Review the sample plans and select the best sample plans based on accesability/contours
+
+# williams lake - 
+# - IDFdk3 = clhs_pts 7
+# - IDF dw = clhs_pts 8
+# 
+# idfdk3 <- st_read(file.path(clhs_outpath, "clhs_pts7.gpkg"), layer = "IDF dk 3")
+# idfdw <- st_read(file.path(clhs_outpath, "clhs_pts8.gpkg"), layer = "IDF xw")
+# 
+# 
+# st_write(idfdk3, dsn = file.path(clhs_outpath, "clhs_pts_selected.gpkg"), layer = "IDF dk 3", append = T, driver = "GPKG")  
+# st_write(idfdw, dsn = file.path(clhs_outpath, "clhs_pts_selected.gpkg"), layer = "IDF xw", append = T, driver = "GPKG")  
+# 
+# clhs_set <- "clhs_pts_selected.gpkg"
+# 
+# 
+# idfdk3 <- st_read(file.path(clhs_outpath, "clhs_pts2_IDF dk 3.gpkg"))
+# st_write(idfdk3, dsn = file.path(clhs_outpath, "clhs_pts_selected.gpkg"), layer = "IDF dk 3", append = T, driver = "GPKG")
+# 
+# idfdw <- st_read(file.path(clhs_outpath, "clhs_pts1_IDF xw.gpkg"))
+# st_write(idfdw, dsn = file.path(clhs_outpath, "clhs_pts_selected.gpkg"), layer = "IDF xw", append = T, driver = "GPKG")  
+# 
+# clhs_set <- "clhs_pts_selected.gpkg"
+
+
+
+## PREP FOR THE TSP PROBLEM
+
+# combine the bgcs for the selected clhs sample plan together and add total cost to generate the travel paths 
+# 
+# ff <- list.files(clhs_outpath, pattern = clhs_set, full.names = TRUE)
+# layers <- st_layers(ff)$name
+# 
+# sample_points_all <- foreach(l = 1:length(layers), .combine = rbind) %do% {
+#   ll = layers[l]
+#   sptemp <- st_read(ff, layer = ll)
+#   sptemp <- sptemp %>%
+#     dplyr::mutate(clhs_repeat = basename(ff))
+#   sptemp
+# }
+# 
+# # add the travel cost to the points (sample + travel cost) 
+# 
+# tcost <- as.data.frame(raster::extract(acost, as(sample_points_all, "Spatial")))
+# names(tcost) <- "tcost"
+# sample_points_all$tcost <- tcost
+# #sample_points_all <- dplyr::select(sample_points_all, -final_obj_continuous)
+# 
+# g <- sample_points_all
+# name<- "geometry"
+# current = attr(g, "sf_column")
+# names(g)[names(g)==current] = name
+# st_geometry(g)=name  
+# sample_points_all <- g
+
+```
+
+
+
+# Generate the TSP routes 
+
+```{r}
+
+pnts <- sample_points_all
+
+pnts <- pnts[,"id"]
+colnames(pnts) <- c("name","geometry") # can cause errors where file is geometry vs geom
+
+#st_geometry(pnts) <- "geometry"
+start <- st_as_sfc(start) %>% st_transform(st_crs(sample_points_all))
+names(start) = "name"
+startPnts <- st_as_sf(data.frame(name = "Start",geometry = start))
+pnts <- rbind(pnts, startPnts) # add start to the list of points
+pnts2 <- as(pnts, "Spatial")   # convert to spatial points data frame
+
+## create distance matrix between sample points
+test <- costDistance(tr1, pnts2, pnts2) # use transition layer from accum cost layer
+dMat2 <- as.matrix(test)
+dMat2 <- dMat2*60 # convert to 
+dMat2[is.infinite(dMat2)] <- 1000
+
+##penalty based on quality of points
+objVals <- sample_points_all$final_obj_continuous
+objVals <- max(objVals) - objVals
+
+maxTime <- 10L ##hours
+## time per transect
+plotTime <- 45L ##mins
+
+minPen <- (maxTime*60L)/2L
+maxPen <- (maxTime*60L)*2L
+objVals <- scales::rescale(objVals, to = c(minPen,maxPen))
+objVals <- as.integer(objVals)
+
+n = nrow(dMat2)-1
+ndays <- as.integer(length(objVals)/4)
+indStart <- as.integer(rep(n,ndays))
+
+vrp <- py_mTSP(dat = dMat2, num_days = ndays, start = indStart, end = indStart, 
+               max_cost = maxTime*60L, plot_time = plotTime, 
+               penalty =  objVals, arbDepot = F, GSC = 8L)
+
+result <- vrp[[1]]
+
+
+
+
+## create spatial paths
+paths <- foreach(j = 0:(length(result)-1), .combine = rbind) %do% {
+  #j = 1
+  if(length(result[[as.character(j)]]) > 2){
+    cat("Drop site",j,"...\n")
+    p1 <- result[[as.character(j)]]+1
+    out <- foreach(i = 1:(length(p1)-1), .combine = rbind) %do% {
+      #i = 2
+      temp1 <- pnts[p1[i],]
+      temp2 <- pnts[p1[i+1],]
+      temp3 <- shortestPath(tr1, st_coordinates(temp1),
+                            st_coordinates(temp2),output = "SpatialLines") %>% st_as_sf()
+      temp3$Segment = i
+      temp3
+    }
+    out$DropSite = j
+    out
+  }
+  
+}
+
+paths <- st_transform(paths, 3005)
+st_write(paths, dsn = file.path(out_path, "TSP_3.gpkg"), layer = "Paths", append = T, driver = "GPKG")  
+
+## label points
+p2 <- pnts
+p2$PID <- seq_along(p2$name)
+p2 <- p2[,"PID"]
+p2$DropLoc <- NA
+p2$Order <- NA
+for(i in 0:(length(result)-1)){
+  p1 <- result[[as.character(i)]]+1
+  p1 <- p1[-1]
+  p2$DropLoc[p1] <- i
+  p2$Order[p1] <- 1:length(p1)
+}
+p2 <- st_transform(p2, 3005)
+st_write(p2, dsn = file.path(out_path, "TSP_3.gpkg"),layer = "Points", append = T,overwrite = T, driver = "GPKG")
+
+```
+
+
+# Incorporating previously sampled site 
+
+Incorporating previous sampling plots or adjusting the slice if sites are unavailable. 
+
+
+```{r}
+
+# read in sites that were previously sampled.  
+
+transect_out_path <- file.path(out_path, "transect_layout")
+prev_samples <- list.files(file.path(transect_out_path, "raw"), pattern = ".gpkg$")
+
+prev_samples <- grep("clhs_previous_*", prev_samples, perl = TRUE, value = TRUE)
+
+previous_sites  <- foreach(i = prev_samples, .combine = rbind) %do% {
+      st_read(file.path(transect_out_path, "raw", i))
+    }        
+
+
+# for each of the bec units 
+  
+for (b in boi) {
+ 
+  b <- boi[3]
+  
+  # filter area able to place points
+  boi_mask <- raster(file.path(out_path, "input_raster", paste0(b,"_exclude_mask.tif"))) 
+  names(boi_mask) = "cost"
+  sample_layers_masked <- stack(ancDat, boi_mask) %>%  # add cost surface to stack
+  raster::mask(boi_mask) # mask by buffered cost surface
+  
+  for(rot in 1:10){
+    #  rot = 1
+  
+    # generate clhs points
+      paired_distance <- 100
+      num_samples <- 15
+      slice_size <- 5
+      num_slices <- round(num_samples/slice_size)
+    
+      # create a empty sf object and add points
+      tmp <- st_sfc()
+      class(tmp)[1] <- "sfc_POINT" # for points
+      sample_points <- st_sf(DAH=integer(0),
+                     MRVBF=integer(0),
+                     LFC = integer(0),
+                     cost=integer(0),
+                     slice_num = integer(0), geometry=tmp)%>%
+      st_set_crs(3005)
+
+    # Index the previous sites to add to clhs. TO do this we need to 
+      # convert the sp points and the raster brick to a data frame. 
+      
+    # convert raster brick to data frame and remove NA values
+      lays <- sample_layers_masked 
+      lays_df <- as.data.frame(lays, xy = TRUE)
+      lays_df <- lays_df  %>% drop_na()
+      
+      prev_xy <- previous_sites %>% filter(subzone == b)
+      prev_xy <- cbind(prev_xy, st_coordinates(prev_xy)) %>%
+          rename_with(tolower)
+      
+    #collect reference locations of lays data frame for previous samples.
+     lays_prev <- lays_df %>%
+       mutate(rowno = as.integer(rownames(lays_df))) %>%
+       left_join(prev_xy) %>%
+       filter(!is.na(id))
+
+      # convert gemetry to match the data merge (conver geom to geometry)
+      sample_points_all_slice <- prev_xy %>%
+        st_drop_geometry() %>%
+        st_as_sf(., coords = c("x","y")) %>%
+        st_set_crs(3005)
+      
+      # #buffer previous sites and asign a very high cost 
+      # 
+      # prev_site_cost_buff <- st_buffer(sample_points_all_slice, dist = rad_exclusion) 
+      #             
+      # # Check if points overlap buffer and then remove 
+      # lays_df_SF <- lays_df %>%
+      #      st_as_sf(., coords = c("x","y")) %>%
+      #      st_set_crs(3005)
+      #           
+      # to_cost <- st_intersection(lays_df_SF, prev_site_cost_buff) %>%
+      #       dplyr::select(geometry) %>%
+      #       mutate(cost_update = 100000) 
+      #             
+      # # this part is slow and could be sped up..
+      # lays_df_buffered <- st_join(lays_df_SF, to_cost) 
+      #   
+      # lays_df_buffered <- lays_df_buffered %>%
+      #   mutate(cost = ifelse(!is.na(cost_update), cost_update, cost)) %>%
+      #   select(-cost_update) 
+      #             
+      # lays_df <- cbind(st_coordinates(lays_df_buffered), lays_df_buffered) %>%
+      #     st_drop_geometry() %>%
+      #     dplyr::rename(x = X, y = Y)
+      #             
+     
+     for(i in 1:num_slices){ # For each slice, perform cLHS (if there is sampleable area left from previous slices)
+        print (paste0("slice: ",i))
+          #i <- 3 #slice no
+ 
+            # filter the sites already in the slice and check if extras needed
+            prev_sample_points <- sample_points_all_slice %>% filter(slice_num == i)
+            sites_required <- 5 - length(unique(prev_sample_points$id))
+            lays_prev_slice <- lays_prev %>%  filter(slice_num == i)
+                
+            # check how many sites need to be genertad - if not rbind to data 
+            if(sites_required > 0 ){
+                   
+            clhs_slice <- clhs(lays_df,
+                                size = slice_size,
+                                must.include = as.matrix(c(lays_prev_slice$rowno)), 
+                                iter = 100000,
+                                simple = FALSE,
+                                progress = TRUE,
+                                cost= "cost",
+                                use.cpp = T) # Run cLHS on the sampleable area
+            
+           clhs_sampled <- st_as_sf(clhs_slice$sampled_data, coords = c("x","y")) %>%
+                    mutate(slice_num = i) %>%
+                    select(-c(DAH, MRVBF, LFC)) %>%
+                    st_set_crs(3005)
+                     
+     
+         for(j in 1:nrow(clhs_sampled)){ # Filter the close together samples from the cLHS run
+                       
+                if(!is.na(clhs_sampled[j, ])){
+                    distances <- data.frame(distance = st_distance(clhs_sampled, clhs_sampled[j, ])) %>%  
+                      rownames_to_column() %>%
+                      mutate_all(as.numeric) %>%
+                      dplyr::filter(distance > rad_exclusion | distance == 0)
+                      clhs_sampled <- clhs_sampled[distances$rowname, ]
+                                              }
+                  }
+                     
+                  # if number of sites is less than selected add a interator and this clhs willl be re-run using the repeat loop below  
+         if(length(clhs_sampled$slice_num) < slice_size){
+          
+              print("points selected are less than sizes less than selected, re-running clhs")
+                  
+              # if the slice was not complete then rerun               
+
+              tmp <- st_sfc()
+                class(tmp)[1] <- "sfc_POINT" # for points
+                sample_points_extra <- st_sf(DAH=integer(0),
+                                 MRVBF=integer(0),
+                                 LFC = integer(0),
+                                 cost=integer(0),
+                                 slice_num = integer(0), geometry=tmp)%>%
+                st_set_crs(3005)
+
+              repeat{
+                  clhs_slice <- clhs(lays_df,
+                                size = slice_size,
+                                must.include = as.matrix(c(lays_prev_slice$rowno)), 
+                                iter = 100000,
+                                simple = FALSE,
+                                progress = TRUE,
+                                cost= "cost",
+                                use.cpp = T) # Run cLHS on the sampleable area
+         
+              clhs_sampled <- st_as_sf(clhs_slice$sampled_data, coords = c("x","y")) %>%
+                  mutate(slice_num = i) %>%
+                  select(-c(DAH, MRVBF, LFC)) %>%
+                  st_set_crs(3005)
+         
+        for(j in 1:nrow(clhs_sampled)){ # Filter the close together samples from the cLHS run
+                       
+                if(!is.na(clhs_sampled[j, ])){
+                    distances <- data.frame(distance = st_distance(clhs_sampled, clhs_sampled[j, ])) %>%  
+                      rownames_to_column() %>%
+                      mutate_all(as.numeric) %>%
+                      dplyr::filter(distance > rad_exclusion | distance == 0)
+                      clhs_sampled <- clhs_sampled[distances$rowname, ]
+                                              }
+                  }
+  
+        if(length(clhs_sampled$slice_num)== slice_size){
+                
+          print("correct number of pts generated")
+                sample_points_extra <- sample_points_extra
+                st_crs(sample_points_extra) <- 3005
+                
+                sample_points_extra <- rbind(clhs_sampled, sample_points_extra)
+                
+                # buffer the sites for the next iteration
+                
+                print("buffering selected points from sampling area")                   # if correct number of samples is selected then continue to next slice 
+             
+                clhs_sampled_buff <- st_buffer(sample_points_extra, dist = rad_exclusion) 
+                  
+              # Check if points overlap buffer and then remove 
+                lays_df_SF <- lays_df %>%
+                  st_as_sf(., coords = c("x","y")) %>%
+                  st_set_crs(3005)
+                
+                to_cost <- st_intersection(lays_df_SF, clhs_sampled_buff) %>%
+                   dplyr::select(geometry) %>%
+                   mutate(cost_update = 100000) 
+                  
+              # this part is slow and could be sped up..
+                lays_df_buffered <- st_join(lays_df_SF, to_cost)  %>%
+                  mutate(cost = ifelse(!is.na(cost_update), cost_update, cost)) %>%
+                  select(-cost_update) 
+      
+                lays_df <- cbind(st_coordinates(lays_df_buffered), lays_df_buffered) %>%
+                  st_drop_geometry() %>%
+                  dplyr::rename(x = X, y = Y)
+                
+                
+                 #buffer previous sites and asign a very high cost 
+                      
+        break # stop the repeat clhs loop if corect number achieved
+         }
+      # if the number is still less than required repeat the above code until correct number is produced
+      print(paste0(length(clhs_sampled$slice_num), " sites generated, rerunning clhs"))
+   
+       }
+  
+          sample_points <- bind_rows(sample_points, sample_points_extra )
+      
+      #  } # end of extra repeats to add
+
+               } else { # if the correct number of sites produced then skip to buffer 
+              
+              print("buffering selected points from sampling area")                   # if correct number of samples is selected then continue to next slice 
+              clhs_sampled_buff <- st_buffer(clhs_sampled, dist = rad_exclusion) 
+                  
+              # Check if points overlap buffer and then remove 
+              lays_df_SF <- lays_df %>%
+                  st_as_sf(., coords = c("x","y")) %>%
+                  st_set_crs(3005)
+                
+             to_cost <- st_intersection(lays_df_SF, clhs_sampled_buff ) %>%
+                dplyr::select(geometry) %>%
+                mutate(cost_update = 100000) 
+      
+      # this part is slow and could be sped up..
+             lays_df_buffered <- st_join(lays_df_SF, to_cost)  %>%
+                mutate(cost = ifelse(!is.na(cost_update), cost_update, cost)) %>%
+                select(-cost_update) 
+      
+             lays_df <- cbind(st_coordinates(lays_df_buffered), lays_df_buffered) %>%
+                st_drop_geometry() %>%
+                dplyr::rename(x = X, y = Y)
+      
+          
+              # add the sample points to the cumulative list
+              sample_points <- bind_rows(sample_points, clhs_sampled) 
+                  
+              } # end of loop adding sites where full complement of sites were generates
+           
+           
+            } else {
+                 
+                  print (paste0(i , " slice completed previously, skipping to next slice"))
+                
+                  prev_sample_points <- prev_sample_points %>%
+                      select(c(slice_num, geometry))
+                  
+                  # buffer the areas of this site for next sampling 
+                    clhs_sampled_buff <- st_buffer(prev_sample_points, dist = rad_exclusion) 
+                  
+                      # Check if points overlap buffer and then remove 
+                  lays_df_SF <-  lays_df  %>%
+                    st_as_sf(., coords = c("x","y")) %>%
+                    st_set_crs(3005)
+                  
+                  to_cost <- st_intersection(lays_df_SF, clhs_sampled_buff) %>%
+                    dplyr::select(geometry) %>%
+                    mutate(cost_update = 100000) 
+                  
+                  # this part is slow and could be sped up..
+                  lays_df_buffered <- st_join(lays_df_SF, to_cost)  %>%
+                    mutate(cost = ifelse(!is.na(cost_update), cost_update, cost)) %>%
+                    select(-cost_update) 
+                  
+                  lays_df <- cbind(st_coordinates(lays_df_buffered), lays_df_buffered) %>%
+                    st_drop_geometry() %>%
+                    dplyr::rename(x = X, y = Y)
+          
+                  sample_points <- bind_rows(sample_points, prev_sample_points)
+                  
+                  } # end of slice loop where no extra points needed. 
+
+
+              } # end of slices loop  
+
+
+  # convert to df to do full join
+ sample_df <- sample_points_all_slice 
+ sample_df <- cbind(sample_df, st_coordinates(sample_df)) %>%
+   st_drop_geometry()
+ 
+ sample_points_df <- sample_points
+  sample_points_df <- cbind( sample_points_df , st_coordinates( sample_points_df )) %>%
+   st_drop_geometry()
+   
+  
+  xx <- full_join(sample_df, sample_points_df,  by = c("X", "Y")) %>%
+    select(-c(DAH, MRVBF, LFC, cost, slice_num.x)) %>%
+    dplyr::rename("slice_num" = slice_num.y) %>%
+    mutate(subzone = b, rotation = "cLHS") 
+
+  sample_points_all <- xx %>%
+  arrange(slice_num)
+  
+  
+# add the missing sites number for each slice
+ out <- foreach(i = unique(sample_points_all$slice_num), .combine = rbind) %do%{
+      #i = unique(sample_points_all$slice_num)[1]
+      temp1 <- sample_points_all %>% filter(slice_num == i)
+      missing.no = temp1$slice_size[!is.na(temp1$slice_size)]
+      to.add <- dplyr::setdiff(seq(1:5), missing.no)
+      temp1$slice_size[is.na(temp1$slice_size)] <- to.add
+      temp1
+  } 
+ 
+ sample_points_all <- out %>%
+  arrange(slice_num, slice_size) %>%
+   st_as_sf(coords = c("X","Y")) %>%
+      st_set_crs(3005)
+ 
+
+sample_points <- mutate(sample_points_all, total = 1:nrow(sample_points_all)) %>% 
+  mutate(id = paste0(subzone, "_", slice_num, ".", slice_size, "_", total)) %>%
+  dplyr::select(names(.)[!(names(.) %in% names(lays))])
+
+st_write(sample_points, dsn = file.path(clhs_outpath, "update_previous_sites", paste0("clhs_pts",rot,"_", b,".gpkg")), append = T, driver = "GPKG")  
+#sample_points
+
+  } # end loop of rotations
+
+} # end of BGC loop 
+    
+  
+  
+  
+  
+  
+  
+# check if previous points are sampled 
+#prev_clhs <- st_read(file.path(out_path, "transect_data", #"previous_sampled_XY.shp"))
+#prevXy <- prev_clhs[grep(bgc_choose, prev_clhs$ID),] 
+
+# if(nrow(prevXy) > 0 ) {
+#   
+#   prevXy <- prevXy %>%
+#     st_transform(3005) %>%
+#     cbind(raster::extract(anc_layers_masked, .)) %>%
+#     select(-c(ID)) %>%
+#     drop_na(cost) %>%
+#     as_Spatial()
+#   no.prev.sites <- nrow(prevXy)
+#   
+#   s <- sampleRegular(anc_layers_masked , size = 500000, sp = TRUE) # sample raster
+#   s <- rbind(prevXy, s) 
+#   
+#   s <- s[!is.na(s$Boundary_25m_DEM2),] # remove cells outside of area
+#   length(s)
+#   
+#   # ##radius of exclusion around points to prevent overlap of secondary transects
+#   t1 <- clhs(s, size =  no.prev.sites + slice_size, 
+#              iter = 5000, 
+#              simple = F, 
+#              progress = T, 
+#              cost = 'cost')#,
+#   #include = 1:no.prev.sites) ### create first slice. layer = cLHSAccumCostSurface. Use 5000 iterations for a normal run
+#   
+#   sPoints <- t1$sampled_data
+#   sPoints$slice_num <- 0
+#   sPoints <- sPoints[-(1:no.prev.sites),]
+#   
+#   #minimum for iterations - 5000
+#   
+#   # # loop to create all slices
+#   for(i in 1:num_slices){ ###loops and create new slices
+#     #i = 2
+#     for(pt in rownames(sPoints@data[sPoints$slice_num == (i-1),])){ ##remove data in zone of exclusion  
+#       tDist <- try(spDistsN1(pts = s, pt = s[pt,]))
+#       if(class(tDist) != "try-error") s <- s[tDist > rad_exclusion | tDist == 0,]
+#       else{
+#         i <- i - 1
+#         sPoints <- sPoints[sPoints$slice_num != i,]
+#       }
+#     }
+#     temp <- clhs(s, 
+#                  size = slice_size + length(which(rownames(s@data) %in% rownames(sPoints@data))), 
+#                  iter = 5, 
+#                  simple = F, 
+#                  progress = T, 
+#                  cost = 'cost', ## cLHS for new slice including all previous slices. Use 5000 iternations for a normal run
+#                  include = which(rownames(s@data) %in% rownames(sPoints@data)))
+#     temp <- temp$sampled_data
+#     temp <- temp[!rownames(temp@data) %in% rownames(sPoints@data),] # remove data from 
+
+```
+
+## Step 7. Generate Location Options for Paired Samples
+
+For sampling efficiency and field safety paired transects at a cLHS points is desireable. The cLHS point is the centre point of the first transect. We generate additional points at 400m from the cLHS points in the eight cardinal and ordinal directions . This distance provides a minimum 100m spacing from the cLHS transect to any second transect. Cardinal points that fall outside the buffered cost surface are removed as candidates.
+Selection of the second (or third) transect from the available set could be made in several ways:randomly, choice of least cost, transect with maximum variable difference from cLHS point.
+
+Currently the second location is based on the least cost.
+
+``` {r Paired Points, tidy = TRUE}
+# First, create 8 cardinal-ordinal points and mask
+boi <- c ("ICH mc 2", "ICH mc 1", "ESSFwv")  # Date Creek
+#boi <- c ("IDF dk 3", "IDF xw")#, "MS  xk 2") # Williams Lake
+#boi <- c("ESSFdc 1",  "ICH dw 1",  "ICH mk 1") # 15 sites - Greenwood/Grandforks
+#boi <- c("ICH xw", "ICH xw  a")                # 15 sites - Grandforks
+
+
+#boi <- "SBS mc 2"
+#clhs_set <- "clhs_pts1_SBS mc 2.gpkg$" # Essfdc2
+#clhs_set <- "clhs_pts2_ESSFmc.gpkg$" # Essfdc2
+#clhs_set <- "clhs_pts9_ICH mc 1.gpkg$" # Essfdc2
+#clhs_set <- "clhs_pts10_IDF dk 1.gpkg$" # Essfdc2
+
+clhs_outpath <- file.path(out_path, "clhs_sample_plans")
+
+# date creek - sites after adding previous sites
+clhs_outpath = file.path(clhs_outpath, "update_previous_sites")
+#clhs_set <- "clhs_pts10_ESSFwv.gpkg$" # Essfdc2
+clhs_set <- "clhs_pts4_ICH mc 1.gpkg$" # Essfdc2
+#clhs_set <- "clhs_pts1_ICH mc 2.gpkg$" # Essfdc2
+
+
+#for (boi in b) # add iteration for the bgcs
+
+
+
+ff <- list.files(clhs_outpath, pattern = clhs_set, full.names = TRUE)
+
+#layers <- st_layers(ff)$name
+
+b = boi[2]
+#sample_points <- st_read(ff, layer = b)
+
+sample_points <- st_read(ff)
+
+# extract all sample cost values 
+#scost <- as.data.frame(raster::extract(sample_cost, as(sample_points, "Spatial")))
+#names(scost) <- "scost"
+#sample_points$scost <- scost
+
+g <- sample_points
+name<- "geometry"
+current = attr(g, "sf_column")
+names(g)[names(g)==current] = name
+st_geometry(g)=name
+sample_points <- g
+
+# read in poly mask 
+mask_poly <- st_read(file.path(out_path, "input_raster",paste0(b, "_exclude_poly.gpkg"))) %>%
+  st_transform(3005)
+ 
+# create paired outputs
+sample_points_clhs <- st_as_sf(sample_points) %>% 
+  st_transform(3005) %>%
+ # dplyr::select(-final_obj_continuous) %>%
+  mutate(aoi = NA)
+
+rotation_angles <- seq(0, 315, 45) # Rotation degrees 
+
+sample_points_rotations <- st_sf(st_sfc()) %>% st_set_crs(3005)
+
+for(i in 1:nrow(sample_points_clhs)){
+  #i = 1
+  pnt <- sample_points_clhs[i,]
+  pGeom <- st_geometry(pnt)
+  pGeom <- pGeom + c(0, centroid_distance)
+  pnt_feat <- st_set_geometry(pnt, pGeom)
+
+  rotated_points <-  st_sf(st_sfc()) %>% st_set_crs(3005)
+   
+  rotated_points <- foreach(Bear = rotation_angles, .combine = rbind) %do%{
+    #Bear = rotation_angles[5]
+       Feature_geo <- st_geometry(pnt_feat)
+       PivotPoint  <- st_geometry(pnt)
+        ## Convert bearing from degrees to radians
+       d <- ifelse(Bear > 180, pi * ((Bear -360)/ 180) ,  pi * (Bear / 180))
+       rFeature <- (Feature_geo - PivotPoint) * rot(d)   + PivotPoint
+       rFeature <- st_set_crs(rFeature, st_crs(pnt_feat))
+       pnt_feat$geometry <- st_geometry(rFeature) ## replace the original geometry
+       pnt_feat$Rotation <- Bear
+       pnt_feat <- pnt_feat %>% st_set_crs(3005)
+  }
+  
+  sample_points_rotations <- rbind(rotated_points, sample_points_rotations)  
+}
+
+
+sample_points_rotations <- st_as_sf(sample_points_rotations, crs = 3005) %>%
+#  mutate(rotation = mapvalues(Rotation, rotation_angles, c("N", "NE", "E", "SE", "S", "SW", #"W", "NW"))) %>%
+  mutate(rotation = mapvalues(Rotation, rotation_angles, c("N", "NE", "SE", "W", "E", "NW", "SW", "S"))) %>%
+  filter(!is.na(Rotation)) %>% 
+  st_join(mask_poly, join = st_intersects) %>%
+  mutate(aoi = ifelse(is.na(cost), FALSE, TRUE))  %>%
+  dplyr::select(-cost) %>%
+  cbind(cost = raster::extract(sample_cost, .))
+  
+sample_points_low_cost <- sample_points_rotations %>%
+  group_by(id) %>%
+  filter(aoi == TRUE) %>%
+  slice(which.min(cost)) %>%
+  ungroup() 
+  
+ 
+# if (length(sample_points_low_cost$id) != length(unique(sample_points_rotations$id))) {
+#   
+#   print("selecting paired transect manually")
+#   
+#  no_aoi_tris <- setdiff(unique(sample_points_rotations$id), unique(sample_points_low_cost$id))
+#                         
+#  sample_points_low_cost_no_aoi <- sample_points_rotations %>%
+#    filter(id %in% no_aoi_tris) %>%
+#    group_by(id) %>%
+#    slice(which.min(cost)) %>%
+#    ungroup() 
+#  
+#  sample_points_low_cost <- sample_points_low_cost %>%
+#    rbind(sample_points_low_cost_no_aoi) 
+#  
+#  }
+
+sample_points_low_cost <- sample_points_low_cost %>%
+  dplyr::select(-c(cost, Rotation))
+
+sample_points_clhs$rotation <- "cLHS"
+
+sample_points_rotations <- sample_points_rotations %>%
+  dplyr::select(-cost, -Rotation) %>%
+  filter(!is.na(rotation))
+
+all_points <- rbind(sample_points_clhs, sample_points_rotations)  %>%
+  mutate(id = paste(id, rotation, sep = "_"))# This is all possible paired samples
+
+paired_sample <- rbind(sample_points_clhs, sample_points_low_cost)  %>%
+  mutate(id = paste(id, rotation, sep = "_"))
+         
+
+
+
+## Step 8. Generate Transects Around cLHS and Paired Points
+
+#The cLHS and paired points are used as the __centre point__ for the 250m-per-side transect triangles. For Stage 1 sampling, we rotate each of the transects randomly. Alternatively, optimized rotation to maximize diversity of the traverse can be applied for other purposes such as map improvement sampling (Stage 2).
+
+
+# Second, create triangle around each point and randomly rotate
+
+all_triangles <- st_sf(st_sfc()) %>% st_set_crs(3005)
+
+for(i in 1:nrow(all_points)){
+  #i = 1
+  poc <- all_points[i, ]
+ 
+  triangle <- Tri_build(id = poc$id, x =  st_coordinates(poc)[1], y =  st_coordinates(poc)[2])
+  random_rotation <- runif(1, min = 0, max = 360)
+  triangle <- rotFeature(triangle, poc, random_rotation)
+  
+#  if(is.na(poc$rotation)){
+#    triangle$id <- poc$id
+#  } else {
+#    triangle$id <- paste(poc$id, poc$rotation, sep = "_")
+#  }
+  all_triangles <- rbind(all_triangles, triangle)
+}
+
+# check that all triangles fall within mask poly 
+
+paired_triangles <- all_triangles[all_triangles$id %in% paired_sample$id,]
+
+ 
+
+# #####write Transects####################
+# 
+# st_write(all_points, file.path(transect_out_path, clhs_set), #"s1_sampling.gpkg"), 
+#          layer = paste0(b,"_points_all"), delete_layer = TRUE)
+# 
+# st_write(all_triangles, file.path(transect_out_path, clhs_set), #"s1_sampling.gpkg"), 
+#                                   layer = paste0(b,"_transects_all"), delete_layer = TRUE)
+# 
+# st_write(paired_sample, file.path(transect_out_path,clhs_set),# "s1_sampling.gpkg"), 
+#          layer = paste0(b,"_points"),  delete_layer = TRUE)
+# 
+
+
+
+```
+
+
+
+``` {r cLHS Map, tidy = TRUE, echo=F, out.width = "90%"}
+tbound <- tm_shape(boundary) + tm_borders()
+tbound <-  tm_borders()
+tcostclip <- tm_shape(acost) + tm_raster(palette = "YlGnBu", n = 20, contrast = c(0, 1),  legend.show = FALSE)
+tclhs <- tm_shape(sample_points) + tm_dots(palette = "Set1", group = "slice_num", scale = 3)
+tclhsmap <-  tcostclip + tclhs
+
+tclhs2 <- tm_shape(all_points) + tm_dots(palette = "Set1", group = "slice_num", scale = 1)
+tclhsmap2 <-  tcostclip +  tclhs2
+
+tclhs3 <- tm_shape(paired_triangles) + tm_lines(palette = "Set1", group = "slice_num", scale=1)
+tclhsmap3 <-  tcostclip  + tclhs3
+
+tmap_arrange (tclhsmap , tclhsmap2)
+```
+
+
+
+```{r cLHS Map 2, echo = F, out.width = "125%"}
+tclhs3 <- tm_shape(paired_triangles) + tm_lines(palette = "Set1", group = "slice_num", scale=1) + tm_layout(main.title = paste("cLHS Sample Triangles for", b, "of", sub("_AOI$", "", basename(AOI))), main.title.size = .75)
+tclhsmap3 <-  tcostclip + tclhs3
+tclhsmap3
+```
+
+## Step 9. Export Transects to QGIS for Field Maps
+
+Transects are uniquely labelled by Subzone-Slice.slice site number-Running number-Cardinal direction (e.g. SBSmc2_6-3_28_NW). Three shape files are exported for use in QGIS: Centre points, transect triangle, and 20m buffer polygon (field sampling boundary). Field maps for Avenza PDF maps are generated in QGIS or ARC. In QGIS, the Atlas function will generate a PDF for each unique point in the cLHS point file. We used a BING base layer (alternate is GOOGLE or orthphoto mosaic) and build QGIS styles to theme the transect and buffer. A map scale of 1:2 000 seems about right for field application. An overview PDF map of transect locations is required for route finding to the transects.
+
+``` {r Export, tidy = TRUE, echo=F, message = FALSE, include = FALSE}
+
+transect_out_path <- file.path(out_path, "transect_layout")
+ifelse(!dir.exists(transect_out_path), dir.create(transect_out_path, recursive = TRUE), FALSE)
+
+clhs_set
+outname = "s1_sampling_revised_new_only.gpkg"
+
+
+#####write Transects####################
+
+st_write(all_points, file.path(transect_out_path,outname), 
+         layer = paste0(b,"_points_all"), delete_layer = TRUE)
+
+st_write(all_triangles, file.path(transect_out_path, outname), 
+                                  layer = paste0(b,"_transects_all"), delete_layer = TRUE)
+
+st_write(paired_sample, file.path(transect_out_path, outname), 
+         layer = paste0(b,"_points"),  delete_layer = TRUE)
+
+
+####write buffer#########################
+triangle_buff <- st_buffer(all_triangles, dist = 10)
+
+st_write(triangle_buff, file.path(transect_out_path, outname), layer = paste0(b,"_transects_all_buffered"), delete_layer = TRUE)
+
+####write points#######################
+#fields <- st_drop_geometry(paired_sample) 
+#fields <- sample_points
+#paired_sample <- merge(fields, sample_points, by = "id", all.x = TRUE)
+#paired_sample$id <- paste(paired_sample$id, paired_sample$rotation, sep = "_")
+
+st_write(paired_sample, file.path(transect_out_path, outname), layer = paste0(b,"_points"),  delete_layer = TRUE)
+
+#paired_triangles
+st_write(paired_triangles, file.path(transect_out_path, outname), layer = paste0(b,"_transects"),  delete_layer = TRUE)
+
+####write buffer#########################
+ptriangle_buff <- st_buffer(paired_triangles, dist = 10)
+st_write(ptriangle_buff, file.path(transect_out_path, outname), layer = paste0(b,"_transects_buffered"), delete_layer = TRUE)
+
+# write out clhs points onlye
+
+st_write(sample_points_clhs, file.path(transect_out_path, outname), layer = paste0(b,"_points_clhs"), delete_layer = TRUE)
+
+
+
+## STILL TO FIX
+
+# write out csv tracking sheet per bgc
+
+for (ii in 1:length(boi)) {
+  #ii = 1
+  b <- boi[ii]
+  
+  points <- st_read(file.path(transect_out_path, "s1_sampling.gpkg"), layer = paste0(b,"_points")) 
+  b
+  points.out <- points %>%
+    cbind(st_coordinates(points)) %>% 
+    dplyr::select(id, rotation, X,Y) %>% 
+    st_drop_geometry() %>% 
+    mutate(Surveyor = "", Date_Completed = "", Transect_comment = "") 
+  
+  write.csv(points.out, file.path(transect_out_path, paste0(b, "_tracking_sheet.csv")))
+  
+}
+
+
+# references
+
+#https://gis.stackexchange.com/questions/280593/understanding-the-values-from-transition-layers-produced-by-the-r-package-gdist
+
+
+# quick fix to join the date creek new and old sites together 
+
+points <- st_read(file.path(transect_out_path, "s1_sampling_revised_new_only.gpkg")) 
+
+, layer = paste0(b,"_points")) 
+
+st_layers(file.path(transect_out_path, "s1_sampling_revised_new_only.gpkg"))
+
+
+# First, create 8 cardinal-ordinal points and mask
+boi <- c ("ICH mc 2", "ICH mc 1", "ESSFwv")  # Date Creek
+b <- boi[2]
+
+
+# points_all
+points_all_new <- st_read(file.path(transect_out_path, "s1_sampling_revised_new_only.gpkg") , layer = paste0(b,"_points_all")) 
+
+points_all_old <- st_read(file.path(transect_out_path, "s1_sampling_previous_sites.gpkg") , layer = paste0(b,"_points_all")) 
+
+# points_all
+points_new <- st_read(file.path(transect_out_path, "s1_sampling_revised_new_only.gpkg") , layer = paste0(b,"_points")) 
+
+points_old <- st_read(file.path(transect_out_path, "s1_sampling_previous_sites.gpkg") , layer = paste0(b,"_points")) 
+
+
+# points_clhs
+points_clhs_new <- st_read(file.path(transect_out_path, "s1_sampling_revised_new_only.gpkg") , layer = paste0(b,"_points_clhs")) 
+
+points_clhs_old <- st_read(file.path(transect_out_path, "s1_sampling_previous_sites.gpkg") , layer = paste0(b,"_points_clhs")) 
+
+
+# transects
+transects_new <- st_read(file.path(transect_out_path, "s1_sampling_revised_new_only.gpkg") , layer = paste0(b,"_transects")) 
+
+transects_old <- st_read(file.path(transect_out_path, "s1_sampling_previous_sites.gpkg") , layer = paste0(b,"_transects")) 
+
+# transects all
+transects_all_new <- st_read(file.path(transect_out_path, "s1_sampling_revised_new_only.gpkg") , layer = paste0(b,"_transects_all")) 
+
+transects_all_old <- st_read(file.path(transect_out_path, "s1_sampling_previous_sites.gpkg") , layer = paste0(b,"_transects_all")) 
+
+# transects buffered all
+transects_all_buffered_new <- st_read(file.path(transect_out_path, "s1_sampling_revised_new_only.gpkg") , layer = paste0(b,"_transects_all_buffered")) 
+
+transects_all_buffered_old <- st_read(file.path(transect_out_path, "s1_sampling_previous_sites.gpkg") , layer = paste0(b,"_transects_all_buffered")) 
+
+
+# transects buffered all
+transects_buffered_new <- st_read(file.path(transect_out_path, "s1_sampling_revised_new_only.gpkg") , layer = paste0(b,"_transects_buffered")) 
+
+transects_buffered_old <- st_read(file.path(transect_out_path, "s1_sampling_previous_sites.gpkg") , layer = paste0(b,"_transects_buffered")) 
+
+
+# join together and write out
+points_all <- bind_rows(points_all_old, points_all_new)
+points <- bind_rows(points_old, points_new)
+points_clhs <- bind_rows(points_clhs_old, points_clhs_new)
+transects <- bind_rows(transects_old , transects_new)
+transects_all <- bind_rows(transects_all_old , transects_all_new)
+transects_all_buffered <- bind_rows(transects_all_buffered_old , transects_all_buffered_new)
+transects_buffered <- bind_rows(transects_buffered_old , transects_buffered_new)
+
+outname = "s1_sampling_V2.gpkg"
+
+st_write(points_all, file.path(transect_out_path, outname), layer = paste0(b,"_points_all"), delete_layer = TRUE)
+st_write(points, file.path(transect_out_path, outname), layer = paste0(b,"_points"), delete_layer = TRUE)
+st_write(points_clhs, file.path(transect_out_path, outname), layer = paste0(b,"_points_clhs"), delete_layer = TRUE)
+st_write(transects, file.path(transect_out_path, outname), layer = paste0(b,"_transects"), delete_layer = TRUE)
+st_write(transects_all, file.path(transect_out_path, outname), layer = paste0(b,"_transects_all"), delete_layer = TRUE)
+st_write(transects_buffered, file.path(transect_out_path, outname), layer = paste0(b,"_transects_buffered"), delete_layer = TRUE)
+st_write(transects_all_buffered, file.path(transect_out_path, outname), layer = paste0(b,"_transects_all_buffered"), delete_layer = TRUE)
+
+} 
+
+
