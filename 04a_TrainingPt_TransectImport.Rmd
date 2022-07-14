@@ -1,0 +1,631 @@
+---
+title: "Import of Stage 1 Field Transect data for Boundary from Avenza PDF maps schema and consolidate"
+subtitle: "by Gen Perkins"
+date: "10/06/2020"
+output: html_document
+---
+
+```{r global_options, include=FALSE }
+require(knitr)
+
+```
+
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(sf)
+library(stringr)
+library(lwgeom)
+library(foreach)
+library(scales)
+
+```
+
+## Introduction
+
+This script contains functionality for the import data collected by Avenza following field collection of triangular paired transects for Stage 1 data collection.
+
+1. Import transects from shapefiles or geopackage exported from Avenza PDF maps. 
+
+2. Converts data to vector triangles (using point to point at 2.5m resolution). Specifically this converts the points to lines (or track log to lines), add the field sample data as attributes to the line. 
+
+To run this script you will need:  
+- field data + tracks collected as .shp or .gpkg files. 
+- Mapunit_Legend (csv file which will convert the codes to standard codes)
+- 
+
+## 1. Set up folder structure for Stage 1 sampling 
+
+```{r set up folder structure }
+
+AOI <- "KootInvCran_AOI_QA"
+
+res <- 2.5 # set resolution
+
+AOI_dir <- file.path(".", paste0(AOI,"reference_data")) 
+
+
+cov_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
+
+trans_layout <- file.path(AOI_dir, "2_sample_design", "stage1_StudyDesign", "transect_layout")
+trans_data <- file.path(AOI_dir, "2_sample_design", "stage1_StudyDesign", "transect_data") 
+
+output_pnts_dir <- file.path(AOI_dir, "2_sample_design", "stage1_StudyDesign", "training_pts")
+
+map.key  <- read.csv(file.path(AOI_dir, "_MapUnitLegend", 
+                                 paste0(AOI, "_MapUnitLegend.csv")), 
+                       stringsAsFactor = FALSE)
+
+if(!dir.exists(output_pnts_dir)) dir.create(output_pnts_dir, recursive = TRUE)
+
+```
+
+Setup functions 
+
+1. extend_lines function will extend lines in order for one line to fully intersect another line. This is only used when the track log is selected for sampling. It is contained within the "process_track".
+
+2. process_track function will separate the tracklog based on the given point data. Some refinement required (see [issue](https://github.com/bcgov-c/BEC_DevExchange_Work/issues/21).
+
+
+```{r Functions}
+
+source(here::here('_functions', 'extend_lines.R'))
+source(here::here('_functions', 'make_lines.R'))
+source(here::here('_functions', 'transect_sample.R'))
+source(here::here('_functions', 'multiline_to_line.R'))
+
+```
+
+
+## 1) Import and clean Avenza field transect data
+
+1. Import transects from shape files or geopackages exported from Avenza PDF maps. The shape files contain all data collected under the schema and so generally contain all transects collected to date on a single tablet. Need to separate using the original study design transect triangles.
+
+
+```{r import base files to run analysis, tidy = TRUE, warning=FALSE}
+
+trans <- list.files(trans_layout, pattern = ".gpkg$", full.names = TRUE, recursive = FALSE)
+
+transect_layout <- foreach(x = trans, .combine = rbind) %do% {
+  clhs_layers <- st_layers(x)
+  lines <- which(clhs_layers[["geomtype"]] %in% c("Line String", "Multi Line String"))
+  if(length(lines)) {
+    transects <- foreach(y = clhs_layers$name[lines], .combine = rbind) %do% {
+      transect <- st_read(x, y, quiet = TRUE) %>% 
+        rename_all(recode, geom = "geometry") %>% 
+        rename_all(.funs = tolower) %>%
+        dplyr::select(id) %>% 
+        mutate(id = as.character(id)) %>% 
+        st_transform(3005)
+    }
+  } 
+} #%>% dplyr::rename(ID = id)
+
+transect_layout <- unique(transect_layout)
+
+transect_layout_buf <- st_buffer(transect_layout, 10)
+
+st_write(transect_layout, file.path(output_pnts_dir, "transect_layout_s1.gpkg"), delete_layer = TRUE)
+
+#transect_layout <- st_read(file.path(output_pnts_dir, "transect_layout_s1.gpkg"))
+#transect_layout_buf <- st_buffer(transect_layout, 10)
+
+```
+
+
+2. Connect the placemarks waypoints into a traverse using the running number name assigned by PDF maps
+
+The following chunk creates some basic folders and loads in data that will be used across all sampling types (a raster template and the original CLHS transects).
+
+
+```{r prepare raw data (unzip data and split into points and lines)}
+## prepare point data sets 
+
+##note you can use the script (_standardise_avenza_input_field_names.R) to standardise the input variables. 
+
+poc_column <- "x03_pt_type"
+mapunit1_column <- "x04_mapunit"
+mapunit2_column <- "x06_mapunit"
+observer_column <- "x02_observe"
+transition_column <- "x05_transit"
+comment_column <- "x09_comment"
+
+
+shp <- list.files(file.path(trans_data), pattern = ".shp", full.names = TRUE, recursive = TRUE)
+
+tracks <- list.files(file.path(trans_data), pattern = "\\(1\\).shp", full.names = TRUE, recursive = TRUE)
+
+#points <- points[3]
+
+points <- shp[!shp %in% tracks]
+
+
+all_points <- foreach(x = points, .combine = rbind) %do% {
+  #x <- points[1]
+  print(x)
+      # when all the points are consolidated into a single geopackage 
+     points_read <- st_read(x, quiet = TRUE) %>%
+     st_transform(3005) %>% 
+     st_zm() %>% 
+     rename_all(.funs = tolower) %>%
+     mutate(mapunit1 = UQ(rlang::sym(mapunit1_column)),
+            mapunit2 = UQ(rlang::sym(mapunit2_column)),
+            point_type  = UQ(rlang::sym(poc_column)),
+            observer =  UQ(rlang::sym(observer_column)), 
+            transition = UQ(rlang::sym(transition_column)),
+            comments = UQ(rlang::sym(comment_column))) %>%
+     st_join(., transect_layout_buf, join = st_intersects) %>%
+     rename_all(.funs = tolower) %>%
+     rename(transect_id = id)
+  
+     if("name" %in% names(points_read)){
+       points_read <- points_read %>%
+         mutate(order = as.numeric(gsub("Placemark ", "", name)))
+     }
+     # } else {
+     #   
+     #   points_read <- points_read %>%
+     #     mutate(name = seq(1, length(mapunit1),1))
+     # }
+    points_read <- points_read %>%
+     dplyr::select(order, mapunit1, mapunit2, point_type, transect_id, observer, transition, comments) %>%
+     group_by(transect_id) %>%
+     arrange(as.numeric(order), by_group = TRUE) %>%
+     ungroup() 
+
+} %>% 
+  distinct(., .keep_all = TRUE) 
+
+#all_points <- all_points %>% 
+#rename(geom = geometry)
+
+# catergorise data types:
+points <- all_points %>%
+  mutate(data_type = ifelse(is.na(transect_id), "incidental", "s1"))
+
+# match to the baseunit key using mapunit legend & format observer column
+points_final <- format_mapunit_names(points, map.key)
+points_final <- fill_observer(points_final)
+ 
+# covert to lines 
+processed_transects <- make_lines(GPSPoints = points_final, 
+                                  Transects = transect_layout_buf, 
+                                  method = "pts2lines",  
+                                  tBuffer = 20, PROJ = 3005) %>%
+  mutate(mapunit1 = (trimws(mapunit1)),
+         mapunit2 = (trimws(mapunit2))) %>%
+  mutate(mapunit12 = paste0(mapunit1,"_", mapunit2)) %>%
+  mutate(mapunit12 = gsub("_NA","", mapunit12)) %>%
+  mutate(mapunit12 = gsub("_$","", mapunit12)) %>%
+  dplyr::select(-TID, -ID)
+
+st_write(processed_transects,  file.path(output_pnts_dir, "proc_s1_transects.gpkg"), 
+         delete_layer = TRUE)
+
+#processed_transects <- st_read(file.path(output_pnts_dir, "proc_s1_transects.shp"))
+
+st_write(points_final, file.path(output_pnts_dir, "s1_pts.gpkg"), delete_layer = TRUE)
+
+```
+
+
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(raster)
+library(sf)
+library(stringr)
+library(lwgeom)
+
+```
+
+```{r set up folder structure, include = FALSE}
+## 1. Set up folder structure for Stage 1 sampling 
+
+AOI <- "BoundaryTSA"
+#AOI <- "Deception"
+#AOI <- "EagleHills"
+
+AOI_dir <- file.path(".", paste0(AOI,"_AOI"))
+
+clean_pts <- file.path(AOI_dir, "1_map_inputs","trainingData","clean")
+
+
+s1_dir <- file.path(AOI_dir, "2_sample_design", "stage1_StudyDesign", "training_pts")
+
+s2_dir <- file.path(AOI_dir, "2_sample_design", "stage2_StudyDesign", "training_pts")
+  
+points_dir <- file.path(AOI_dir, "2_sample_design", "stage2_point_data", "training_pts")
+
+map.key  <- read.csv(file.path(AOI_dir, "_MapUnitLegend", 
+                                 paste0(AOI, "_MapUnitLegend.csv")), 
+                       stringsAsFactor = FALSE)
+```
+
+### Training data summary report : `r AOI`.
+
+The following report summarises field calls by length (transects). A summary of raw point calls, on which transects were collected is include in the Appendices. 
+
+```{r import base files to run analysis, tidy = TRUE, warning=FALSE, include = FALSE}
+## 1) Import consolidated data and linear transects
+
+s1_trans <- list.files(s1_dir, pattern = "^proc", full.names = TRUE, recursive = FALSE)
+s1_pts <- list.files(s1_dir, pattern = "_pts.gpkg$", full.names = TRUE, recursive = FALSE)
+
+s2_trans <- list.files(s2_dir, pattern = "^proc", full.names = TRUE, recursive = FALSE)
+s2_pts <- list.files(s2_dir, pattern = "_pts.gpkg$", full.names = TRUE, recursive = FALSE)
+
+```
+
+
+### 1) Summary of line data length
+
+```{r, echo = FALSE, messgae = FALSE}
+# Deception: 
+s1_trans <- st_read(s1_trans, quiet = TRUE)
+s2_trans <- st_read(s2_trans, quiet = TRUE)
+all_trans <- bind_rows(s1_trans, s2_trans) 
+
+all_trans <- all_trans %>%  
+    mutate(length = st_length(.)) %>%
+    st_drop_geometry() 
+
+
+#all_trans_i <- all_trans %>%
+#  dplyr::filter(data_type == "incidental")
+
+# total type of points with primary and secondary 
+trans_type_p <- all_trans %>%
+  group_by(data_type) %>%
+  dplyr::summarise(primary = sum(length, na.rm = TRUE))
+
+trans_type_s <- all_trans %>%
+  filter(!is.na(mapunit2)) %>%
+  group_by(data_type) %>%
+  dplyr::summarise(secondary = sum(length, na.rm = TRUE))
+
+trans_type <- left_join(trans_type_p, trans_type_s) %>%
+  mutate(pc.sec = round((secondary/primary * 100),1))
+
+trans_type_long <- left_join(trans_type_p, trans_type_s) %>%
+  mutate(pc.sec = secondary/primary * 100)
+
+
+trans_types <- unique(trans_type$data_type)
+
+```
+ 
+A total length of `r round(sum(trans_type$primary),1)` meters was surveyed during transect collection. This include `r round(length(trans_type$data_type),1)` data types : `r trans_types`.
+
+Alternate calls were made for `r round(sum(trans_type$secondary, na.rm = TRUE),2)` meters, with an average of `r round(sum(trans_type$secondary, na.rm = TRUE)/sum(trans_type$primary, na.rm = TRUE)*100, 1) ` % of all calls.
+
+```{r, results  = "asis", hide = TRUE, echo = FALSE}
+
+kable(trans_type)
+
+```
+
+```{r, echo = FALSE, fig.width = 10, fig.height=10}
+#all_trans
+
+trans_f<- all_trans %>%
+  mutate(mapunit2 = ifelse(mapunit2 == "", NA, mapunit2),
+         mapunit1 = ifelse(mapunit1 == "", NA, mapunit1)) %>%
+  group_by(mapunit1, mapunit2) %>%
+  dplyr::summarise(length = sum(length)) %>%
+  ungroup()
+  
+# primary calls: 
+trans_f_p <- trans_f %>%
+  filter(is.na(mapunit2)) 
+
+# format secondary calls:
+trans_f_s12 <- trans_f %>%
+  filter(!is.na(mapunit2)) %>%
+  mutate(order = "mapunit12")
+       
+trans_f_s21 <- trans_f %>%
+  filter(!is.na(mapunit2)) %>%
+  mutate(order = "mapunit21",
+         mapunit3 = mapunit1, 
+         mapunit4 = mapunit2) %>%
+  dplyr::select(-c(mapunit1, mapunit2)) %>%
+  dplyr::rename(mapunit1 = mapunit4, 
+                mapunit2 = mapunit3)
+
+trans_secondary <- bind_rows(trans_f_s12, trans_f_s21) %>%
+  arrange(mapunit1, mapunit2) %>%
+  group_by(mapunit1, mapunit2) %>%
+  dplyr::summarise(length = sum(length)) 
+
+trans_secondary_f1 <- trans_secondary %>%
+  group_by(length) %>%
+  arrange(length, group_by = TRUE) %>%
+  aggregate(.~length, . , FUN=head, 1) %>%
+  dplyr::select(mapunit1, mapunit2, length)%>%
+  arrange(mapunit1) %>%
+  mutate(length = round(length, 2))
+
+
+trans_summary <- bind_rows(trans_f_p, trans_secondary_f1) 
+  
+trans_total <- trans_summary %>%
+  arrange(mapunit1) %>%
+  rowwise() %>%
+  mutate(bgc = unlist(strsplit(mapunit1, "_"))[1]) %>%
+  mutate(bgc = ifelse(str_detect(mapunit1, "_"), bgc, "non-forest")) %>%
+  ungroup() %>%
+  mutate(length = as.numeric(round(length, 1))) %>%
+  filter(!is.na(mapunit1)) %>%
+  mutate(mapunit12 = ifelse(is.na(mapunit2), mapunit1, paste0(mapunit1, "/", mapunit2)))
+
+bgc_list <- unique(trans_total$bgc)
+
+```
+
+The length of calls per bgc varied, along with proportion of primary and secondary calls. Figures below show the length of calls for all data types grouped by predominant bgc.
+
+
+```{r, echo = FALSE, fig.width= 12, fig.height = 16}
+# plot the freqency 
+
+# points collected per type (primary and secondary calls) all calls
+#p <- ggplot(trans_total, aes(y = mapunit12, x = length)) + 
+#  facet_wrap(~bgc, scales = "free_x") +    
+#  geom_bar(stat = "identity")
+#         
+#print(p)
+
+
+
+for(b in bgc_list) {
+
+ # b = unique(pt_total$bgc)[3]
+  pt_total_bgc <- trans_total %>%
+    filter(bgc == b)
+  
+  p <- ggplot(pt_total_bgc , aes(y = reorder(mapunit12, length), x = length)) +
+  geom_bar(stat = "identity") + 
+  labs(title = b, y = "mapunit")
+  
+  print(p)
+  
+#  ggplot(pt_total_bgc , aes(y = mapunit1, x = freq)) +
+#  geom_bar(stat = "identity")
+     
+  #ggsave(file.path(s1_dir, paste0(b, "_point_freq_s1.png")))
+  
+  
+}
+
+```
+
+
+### Proportion of primary and secondary calls per observer.
+
+```{r echo = FALSE}
+
+# group by observer
+
+all_trans_ob <- all_trans %>%
+  group_by(transect_id) %>%
+  fill( observer, .direction = "downup")
+
+#all_trans_ob_sum <- all_trans_ob %>%
+#   group_by(transect_id, observer) %>%
+#    dplyr::summarise(count = n())
+
+trans_ob_p <- all_trans_ob %>%
+ # dplyr::filter(is.na(mapunit2)) %>%
+  group_by(observer) %>%
+  summarise(all.calls = sum(length))
+
+trans_ob_s <- all_trans_ob %>%
+  dplyr::filter(!is.na(mapunit2)) %>%
+  group_by(observer) %>%
+  summarise(sec.calls = sum(length))
+
+
+trans_obs_type <- left_join(trans_ob_p, trans_ob_s) %>%
+  mutate(pc.sec = round((sec.calls/all.calls * 100),1))
+
+trans_obs_type<- trans_obs_type %>%
+  mutate(observer = case_when(
+    observer == "EAC GP" ~ "EAC",
+    observer == "EAC GCP" ~ "EAC",
+    observer == "EC" ~ "EAC",
+    observer == "CC LJ" ~ "CC",
+    observer == "DF LJ" ~ "DF",
+    observer =="DJM DF" ~ "DJM",
+    observer == "PD AR" ~ "PD", 
+    observer =="SRan" ~ "SR",
+    observer == "SR/MZ" ~ "SR",
+    observer == "WM" ~ "WHM",
+        TRUE ~ observer)) %>%
+      group_by(observer) %>%
+      summarise(across(where(is.numeric), sum)) %>%
+  mutate(pc.sec = round(sec.calls/all.calls * 100,1))
+
+```
+
+
+There were `r length(trans_ob_s$observer)` observers recording data, including unnamed recorders (NA). The table below shows the total calls and the proportion of calls which also had a secondary call. The average proportion of transect length that has a secondary call was `r mean(trans_ob_s$pc.sec)`. Note this data does not include repeat transects, in which multiple observers recorded at the same location. 
+
+```{r, results  = "asis", hide = TRUE, echo = FALSE}
+
+kable(trans_obs_type)
+
+```
+
+
+
+
+```{r, include = FALSE}
+# 
+# Appendices
+# ### Summary of point data 
+# 
+# Point data represents the raw data collected by observers during transect traverses. This is included for comparison only. 
+
+```
+
+
+```{r, include = FALSE}
+# combine stage 1 and 2 and summarise calls
+
+s1_pt <- st_read(s1_pts, quiet = T) 
+s2_pt <- st_read(s2_pts, quiet = T) 
+
+pts <- bind_rows(s1_pt, s2_pt) %>%
+  dplyr::select(-order) %>%
+  st_drop_geometry() %>%
+  filter(!is.na(mapunit1)) %>%
+  mutate(mapunit12 = paste0(mapunit1,"_", mapunit2)) %>%
+  mutate(mapunit12 = gsub("_NA","", mapunit12)) %>%
+  mutate(mapunit12 = gsub("_$","", mapunit12)) 
+
+# proportion of calls with primary and secondary calls
+
+# total type of points with primary and secondary 
+pt_type_p <- pts %>%
+  group_by(data_type) %>%
+  dplyr::summarise(all.calls = n())
+
+#pt_type_i <- pts %>%
+#  filter(data_type == "incidental")
+
+pt_type_s <- pts %>%
+  filter(!is.na(mapunit2)) %>%
+  group_by(data_type) %>%
+  dplyr::summarise(sec.calls = n())
+
+pt_type <- left_join(pt_type_p, pt_type_s) %>%
+  mutate(percent.sec = sec.calls/all.calls * 100)
+
+pt_types <- unique(pt_type$data_type)
+
+```
+
+```{r, include = FALSE}
+
+# At `r AOI` study area a total `r sum(pt_type$all.calls)` point calls were collected during traverse (stage 1 and stage 2) transect collection. This include `r length(pt_type$data_type)` data types : `r pt_types`.
+# 
+# Of these, `r sum(pt_type$sec.calls)` points were also given an secondary call, representing an average percent of `r round(sum(pt_type$sec.calls)/sum(pt_type$all.calls)*100, 1) ` %).
+
+```
+
+
+```{r, results  = "asis", hide = TRUE, echo = FALSE,  include = FALSE}
+
+kable(pt_type)
+
+```
+
+```{r, echo = FALSE, warnings = FALSE, messages = FALSE, fig.width = 12,fig.height = 16, include = FALSE}
+# calculate the frequency of all calls with primary and secondary
+#The following figures provide a breakdown of primary and secondary call #frequency of point data collected. Note in the figures below secondary #calls are presented twice in each figure (ie: CX_AM and AM_CX). 
+
+# stage 1 
+pt_f <- pts %>%
+  filter(data_type == "s1") %>%
+  mutate(mapunit2 = ifelse(mapunit2 == "", NA, mapunit2),
+         mapunit1 = ifelse(mapunit1 == "", NA, mapunit1)) %>%
+  group_by(mapunit1, mapunit2) %>%
+  dplyr::summarise(freq = n())
+  
+
+# primary calls: 
+pt_f_p <- pt_f %>%
+  ungroup() %>%
+  filter(is.na(mapunit2)) %>%
+  dplyr::select(-mapunit2)
+
+# format secondary calls:
+pt_f_s <- pt_f %>%
+  filter(!is.na(mapunit2)) %>%
+  mutate(mapunit12 = paste0(mapunit1, "_", mapunit2),
+         mapunit21 = paste0(mapunit2, "_", mapunit1)) %>%
+  ungroup()
+
+# grab mapunit12
+pt_f_s1 <- pt_f_s %>%
+  dplyr::select(mapunit12, freq) %>%
+  mutate(type = "mapunit12")
+
+# grab mapunit21
+pt_f_s2 <- pt_f_s %>%
+  dplyr::select(mapunit21, freq)%>%
+  mutate(type = "mapunit21",
+         mapunit12 = mapunit21 ) %>%
+ dplyr::select(-c(mapunit21))
+
+#duplicates <- c(pt_f_s2$mapunit12)
+
+pt_secondary <- bind_rows(pt_f_s1, pt_f_s2) %>%
+  arrange(mapunit12) %>%
+  group_by(mapunit12) %>%
+  dplyr::summarise(freq = sum(freq)) %>%
+  dplyr::rename(mapunit1 = mapunit12)
+
+#pt_secondary_tidy <- pt_secondary %>%
+#  mutate(map1 = str_split(mapunit1, "[:digit:]\\_", n = 2))
+#pt_secondary_tidy$map1
+
+
+#note these appear twice for each combination! Need to remove these!
+
+pt_total <- bind_rows(pt_f_p, pt_secondary) %>%
+  arrange(mapunit1) %>%
+mutate(bgc = case_when(
+    str_detect(mapunit1,"ESSFmc_") ~ "ESSFmc",
+    str_detect(mapunit1, "SBS") ~  "SBS",
+    str_detect(mapunit1,"ESSFdc2") ~ "ESSFdc",
+    str_detect(mapunit1,"ESSFmh") ~ "ESSFmh",
+    str_detect(mapunit1,"ICHmk1") ~ "ICHmk",
+    str_detect(mapunit1,"IDFdm1") ~ "IDFdm",
+    str_detect(mapunit1,"MSdm1") ~ "MSdm",
+    TRUE ~ "non-forest"
+    )) %>%
+  dplyr::filter(!is.na(mapunit1))
+  
+# points collected per type (primary and secondary calls) all calls
+#p <- ggplot(pt_total, aes(y = mapunit1, x = freq)) + 
+#  facet_wrap(~bgc, scales = "free_x") +    
+#  geom_bar(stat = "identity")
+#         
+#p
+
+# points collected per bgc (primary and secondary calls) 
+bgc_list <- unique(pt_total$bgc)
+plot_list <- vector(length = length(bgc_list), mode = "list")
+names(plot_list) <- bgc_list
+
+
+for(b in bgc_list) {
+
+ # b = unique(pt_total$bgc)[3]
+  pt_total_bgc <- pt_total %>%
+    filter(bgc == b) %>%
+    arrange(freq)
+  
+  p <- ggplot(pt_total_bgc , aes(y = reorder(mapunit1, freq), x = freq)) +
+  geom_bar(stat = "identity") + 
+  labs(title = b, y = "mapunit")
+  
+  print(p)
+  
+#  ggplot(pt_total_bgc , aes(y = mapunit1, x = freq)) +
+#  geom_bar(stat = "identity")
+     
+  #ggsave(file.path(s1_dir, paste0(b, "_point_freq_s1.png")))
+  
+  
+}
+
+```
+
+
+
+
