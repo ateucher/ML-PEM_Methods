@@ -35,6 +35,7 @@ library(fasterize)
 This script relies on having a spatial file (AOI.gpkg) defining the study area (area of interest - AOI). Firstly the area of interest is defined along with input and output folders. 
 
 1) generate template raster for multiple scales
+
 2) generate base DEM Layer from 
  - lidar processing (1m)
  - trim (25)
@@ -50,10 +51,15 @@ This script relies on having a spatial file (AOI.gpkg) defining the study area (
 #AOI <- "PeterHope"
 #AOI <- "OldFort"
 #AOI <- "Buck"
-AOI <- "Deception"
+#AOI <- "Deception"
 #AOI <- "BoundaryTSA"
 #AOI <- "Wetzinkwa"
 #AOI <- "EagleHills"
+#AOI <- "KootInvCran"
+#AOI <- "KIC_SE"
+AOI <- "KIC_NE"
+#AOI <- "KIC_SW"
+#AOI <- "KIC_NW"
 
 
 AOI_dir <- file.path(paste0(AOI, "_AOI"))
@@ -68,7 +74,6 @@ source("./_functions/multi_res.R")
 ```
 
 
-
 # 1) create a raster templates for AOI at different scales
 
 ```{r}
@@ -79,31 +84,26 @@ aoi <- st_read(file.path(shape_dir, "aoi_snapped.gpkg")) %>%
 
 # create a set of template rasters based on various cell resolution
 
-res <- c(5, 25) # set to 1m and 25m # set to 1m and 25m
+res <- c(25) # set to 1m, 5m and 25m 
 
 for (re in res){
-  re = 5
-
+  #re = 25
   r_dir <- file.path(cov_dir, paste0(re,"m"))
-  
+  r_dir_trim <- file.path(cov_dir, paste0(re, "m_trim"))
   if (!dir.exists(r_dir)){
   dir.create(r_dir)
-    
+  dir.create(r_dir_trim)
   } else {
-      
     print("Directory already exists!")
   }
-  
   if (file.exists(file.path(r_dir, "template.tif"))){
-    
     print("template for this resolution already exists!")
-  
     } else {
-  
   rtemp <- raster(aoi, res = re)
   r_out <- fasterize(aoi, rtemp, field = "id")
   
   writeRaster(r_out, file.path(r_dir, "template.tif"))
+  writeRaster(r_out, file.path(r_dir_trim, "template.tif"))
     }
 }
 
@@ -112,8 +112,9 @@ for (re in res){
 
 # 2) Generate base DEM Layer from lidar processing to match template rasters. 
 
-```{r}
+Note this can only be done with Lidar data. If TRIM is required to be used for sample planning skip to step 4 below and rerun this section only the data is available/ processed. 
 
+```{r}
 # generate a 1m DEM from Lidar or 25m from TRIM base DEM 
 # note if lidar is unavailable use other metrics TRIM, CDED
   res <- 1
@@ -140,8 +141,7 @@ for (re in res){
 
 ```
 
-
-# Generate multiple resolution dems
+# 3) Generate multiple resolution dems
 
 Once the 1m dem is correctly cropped to the aoi, we can generate base dems at various resolutions. For sample planning we use 25m.
 
@@ -161,7 +161,6 @@ for(i in l){
 c <- raster(i) ;   print(i) ;  print("Resolution") ;  print(res(c)) ; print(as.vector(extent(c)))
   
 }
-
 
 ###################################################################################
 # tempory fix for the Deception data set: 
@@ -220,14 +219,14 @@ stack(l)
 ```
 
 
-## Generate BGC Rasters 
+## 4) Generate BGC Rasters 
 
 Note in this case the bgc layer on the BCGW is not the latest available so we use an updated version. 
 This script causes problems with larger raster sets (5m Boundary will not automatically convert as stars creates a proxy object due to the size of the data)
 
 ```{r}
-res <- c(5, 10, 25) # set to 1m and 25m
-res <- 5
+res <- c(5, 25) # set to 1m and 25m
+res <- 25
 
 for (re in res) {
   #bec_name <- "dc_becV12_2.gpkg"
@@ -237,13 +236,19 @@ for (re in res) {
 
   bec_sf <- st_read(file.path(shape_dir, bec_name))
   bec_sf <- st_cast(bec_sf, "MULTIPOLYGON") %>%
-   mutate(BGC_LABEL = gsub(" ","", BGC_LABEL)) %>%
-   mutate(BGC_no = seq(1, length(bec_sf$BGC_LABEL),1))
+    mutate(BGC_LABEL = gsub(" ","", BGC_LABEL)) 
+  
+  bec_code <- bec_sf %>% st_drop_geometry()  %>% dplyr::select(BGC_LABEL) %>%
+    unique() 
+  bec_code <- bec_code %>% 
+    mutate(bgc_unique_code = seq(1, length(bec_code$BGC_LABEL),1))
+
+  bec_sf <- left_join(bec_sf, bec_code)
   
 # select resolution of raster 
   rtemplate <- stars::read_stars(file.path(cov_dir, paste0(re,"m"), "template.tif"), proxy = FALSE)
 
-  out <- stars::st_rasterize(bec_sf["BGC_LABEL"],
+  out <- stars::st_rasterize(bec_sf["bgc_unique_code"],
                            template = rtemplate)
   st_crs(out) = st_crs(rtemplate)
 
@@ -251,7 +256,8 @@ for (re in res) {
 
   stars::write_stars(out,
                    file.path(cov_dir, paste0(re,"m"), "bgc.tif")) #tile name
-
+   stars::write_stars(out,
+                   file.path(cov_dir, paste0(re,"m_trim"), "bgc.tif")) #tile name
   
   ## for very large raster (5m boundary dataset we need to use another method)
   
@@ -265,9 +271,9 @@ for (re in res) {
   
 ```
 
-# 2) Generate base DEM Layer from TRIM/CDED 
+# 5) Alternate method: Generate base DEM Layer from TRIM/CDED 
 
-Note to generate the landscape layer froim TRIM and expand the area to ensure the entire study area will be included study area 
+Note to generate the landscape layer from TRIM and expand the area to ensure the entire study area will be included study area 
 
 ```{r}
 # update to cded function from bcmaps
@@ -277,11 +283,13 @@ trim_folder <- file.path(cov_dir, "25m_trim")
 
 # create trim folder
 ifelse(!dir.exists(trim_folder), dir.create(trim_folder, recursive = TRUE), FALSE)
+writeRaster(r_out, file.path(trim_folder, "template.tif"), overwrite = TRUE) # save raster template in trim folder also
 
 # Use the expanded aoi to create a wider AOI raster
 # read in the aoi
 template <- raster(file.path(cov_dir, "25m_trim", "template.tif"))
-extent(template)
+#extent(template)
+
 # expand the template to wider extent to ensure edges are not cut off for landscape calculations
 # extend with a number of rows and columns (at each side)
 
@@ -301,8 +309,14 @@ trim_aoi_prj <- projectRaster(trim_aoi, template, method = 'bilinear')
 
 writeRaster(trim_aoi_prj, file.path(cov_dir, paste0(res,"m_trim"), "dem.tif"), format = "GTiff", overwrite = TRUE)
 
-
 ```
+
+
+
+
+### TEST CASES AND WORKING 
+
+
 
 
 ```{r}
@@ -337,6 +351,14 @@ trim_aoi_prj <- projectRaster(trim_aoi, template, method = 'bilinear')
 writeRaster(trim_aoi_prj, file.path(cov_dir, paste0(res,"m_trim"), "dem.tif"), format = "GTiff", overwrite = TRUE)
 
 ```
+
+
+
+
+
+
+
+
 
 
 ```{r}

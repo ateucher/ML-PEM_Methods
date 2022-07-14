@@ -14,35 +14,35 @@ library(spatialEco)
 source("./_functions/landfClass.R")
 
 
+#create_covariates <- function(saga_dir,  saga_files, cov_type) {
 
-create_covariates <- function(saga_dir,  saga_files, cov_type) {
-                              
-        saga_dir = "E:/transfer/software/saga-7.4.0_x64"
-        saga_files = "E:/temp/PEM_DATA/BEC_DevExchange_Work/Buck_AOI/1_map_inputs/covariates/5m"
-        cov_type = "stand" # alternative is landscape for sample planning
-        
-        
+saga_dir = "E:/transfer/software/saga-7.4.0_x64"
+saga_files = "E:/temp/PEM_DATA/BEC_DevExchange_Work/KIC_NE_AOI/1_map_inputs/covariates/25m_trim"
+#cov_type = "stand" # alternative is landscape for sample planning
+
+
+
 # 1) Set up Saga - r link on your machine -----------------------------
 
- # if(Sys.info()['sysname'] == "Windows"){
- # 
- #        saga_cmd ="C:\\Program Files\\SAGA-GIS\\saga_cmd.exe"
- #        error_check <- system(paste(saga_cmd, "-v"))
- #        if(error_check == 127) {
- #                print("Cannot find saga_cmd.exe please define filepath")
- #                print("for example : saga_cmd = `E:/transfer/software/saga-7.4.0_x64`")
- #            }
- #        }
-           
-        saga_cmd <- list.files(saga_dir, recursive = TRUE, 
-                               pattern = "saga_cmd.exe", full.names = TRUE)
-        
-        # test if saga is working. If the response is 127 this is an error - check filepath again.
-        system(paste(saga_cmd, "-v"))
+# if(Sys.info()['sysname'] == "Windows"){
+# 
+#        saga_cmd ="C:\\Program Files\\SAGA-GIS\\saga_cmd.exe"
+#        error_check <- system(paste(saga_cmd, "-v"))
+#        if(error_check == 127) {
+#                print("Cannot find saga_cmd.exe please define filepath")
+#                print("for example : saga_cmd = `E:/transfer/software/saga-7.4.0_x64`")
+#            }
+#        }
+
+saga_cmd <- list.files(saga_dir, recursive = TRUE, 
+                       pattern = "saga_cmd.exe", full.names = TRUE)
+
+# test if saga is working. If the response is 127 this is an error - check filepath again.
+system(paste(saga_cmd, "-v"))
 
 
 # 2) Set up output folder for saga temp folder and output folder 
-        
+
 tmpOut <- file.path(saga_files, "sagaTmp")
 
 ifelse(!dir.exists(file.path(tmpOut)),               
@@ -54,68 +54,68 @@ ifelse(!dir.exists(file.path(saga_files, "outputs")),
 
 # 3) set up base raster DTM
 
-        dem_files <- list.files(saga_files, 
-                                 pattern = "dem.tif$", 
-                                 full.names = TRUE, 
-                                 recursive = TRUE, 
-                                 ignore.case = TRUE)
-        
-        DTM <- raster(file.path (dem_files)[1])
-        
-        # ensure raster is in BC albers projection
-        PROJ <- crs(paste("+init=epsg:", 3005, sep = "")) 
-        crs(DTM) <- PROJ 
-        
-        # convert dem to saga format by first converting to gtiff
-        ## Bit of a hack here -- SAGA does not like the output from raster package
-        ## save it as gTiff, re-open using rgdal and export as SAGA ...
-        
-        rDTM <- file.path(tmpOut, "dem.tif") 
-        
-        raster::writeRaster(DTM,  rDTM, drivername = "GTiff", overwrite = TRUE)  # save SAGA Version using rgdal
-        
-        dtm <- rgdal::readGDAL(rDTM)
-        
-        sDTM <- file.path( tmpOut,"dem.sdat")
-        
-        
-        ## If the file exists delete and save over.
-        if(file.exists(sDTM)){
-                unlink(sDTM)
-                rgdal::writeGDAL(dtm, sDTM, drivername = "SAGA")  ## TRUE
-        } else {
-                rgdal::writeGDAL(dtm, sDTM, drivername = "SAGA" )               ## FALSE
-        }
-        ## END HACK ------------------
-        
+dem_files <- list.files(saga_files, 
+                        pattern = "dem.tif$", 
+                        full.names = TRUE, 
+                        recursive = TRUE, 
+                        ignore.case = TRUE)
+
+DTM <- raster(file.path (dem_files)[1])
+
+# ensure raster is in BC albers projection
+PROJ <- crs(paste("+init=epsg:", 3005, sep = "")) 
+crs(DTM) <- PROJ 
+
+# convert dem to saga format by first converting to gtiff
+## Bit of a hack here -- SAGA does not like the output from raster package
+## save it as gTiff, re-open using rgdal and export as SAGA ...
+
+rDTM <- file.path(tmpOut, "dem.tif") 
+
+raster::writeRaster(DTM,  rDTM, drivername = "GTiff", overwrite = TRUE)  # save SAGA Version using rgdal
+
+dtm <- rgdal::readGDAL(rDTM)
+
+sDTM <- file.path( tmpOut,"dem.sdat")
+
+
+## If the file exists delete and save over.
+if(file.exists(sDTM)){
+  unlink(sDTM)
+  rgdal::writeGDAL(dtm, sDTM, drivername = "SAGA")  ## TRUE
+} else {
+  rgdal::writeGDAL(dtm, sDTM, drivername = "SAGA" )               ## FALSE
+}
+## END HACK ------------------
+
 
 # set function to convert .sdat to tif and assign projection 
 
 sdat_to_tif <- function(infile, out_crs = 3005){
-        
-        #infile <- dahfile
-        # sagafile <- rasterfiles[iii] # 5
-        sagafile <- basename(infile)
-        print (sagafile)
-        outfile <- gsub("sdat", "tif", sagafile)
-        r <- readGDAL(file.path(saga_files,"sagaTmp",sagafile))
-        w <- file.path(saga_files, "outputs", outfile) #, sep = "")
-        writeGDAL(r, w)
-        
-        rfile <- raster(w)
-        
-        if(is.na(crs(rfile))) {
-                print("setting projection to 3005")
-                # ensure raster is in BC albers projection
-                PROJ <- crs(paste("+init=epsg:",out_crs, sep = "")) 
-                crs(rfile) <- PROJ 
-                
-        } else {
-                print("projection already set to 3005")
-        }
-        
-        w_out <- writeRaster(rfile, file.path(saga_files, basename(w)), overwrite = TRUE, driver = "GTiff")
-        
+  
+  #infile <- dahfile
+  # sagafile <- rasterfiles[iii] # 5
+  sagafile <- basename(infile)
+  print (sagafile)
+  outfile <- gsub("sdat", "tif", sagafile)
+  r <- readGDAL(file.path(saga_files,"sagaTmp",sagafile))
+  w <- file.path(saga_files, "outputs", outfile) #, sep = "")
+  writeGDAL(r, w)
+  
+  rfile <- raster(w)
+  
+  if(is.na(crs(rfile))) {
+    print("setting projection to 3005")
+    # ensure raster is in BC albers projection
+    PROJ <- crs(paste("+init=epsg:",out_crs, sep = "")) 
+    crs(rfile) <- PROJ 
+    
+  } else {
+    print("projection already set to 3005")
+  }
+  
+  w_out <- writeRaster(rfile, file.path(saga_files, basename(w)), overwrite = TRUE, driver = "GTiff")
+  
 } 
 
 
@@ -168,7 +168,7 @@ sinksRoute <- file.path(tmpOut, "sinkroute.sgrd")
 sysCMD <- paste(saga_cmd, "ta_preprocessor 1", 
                 "-ELEVATION" , sDTM,        
                 "-SINKROUTE", sinksRoute                              
-                                                   
+                
 )
 system(sysCMD)
 
@@ -194,7 +194,7 @@ system(sysCMD)
 
 
 
-if(cov_type == "landscape") {
+#if(cov_type == "landscape") {
 
 ######################################################################################
 
@@ -236,71 +236,13 @@ system(sysCMD)
 
 # write to tif 
 mrvbfile <- list.files(file.path(saga_files,"sagaTmp"), pattern = "mrvbf_LS.sdat", full.names = T)
-sdat_to_tif(mrvbfile)
-
-# sieve 
-mrv_file <- list.files(saga_files, pattern = "mrvbf_LS.tif", full.names = TRUE )
-mrv  <- raster(mrv_file)
-mrv_s <- file.path(saga_files,"mrvbf_LSs_test.tif")
-
-## # set up a sieve python command - NOTE Still not working  
-# saga_cmd = "saga_cmd"}  
-
-infile = mrv_file 
-outfile = mrv_s
-
-###
-#py.sieve <- "C:\\Program Files\\QGIS 3.18\\apps\\Python37\\Scripts\\gdal_sieve.py"
-#gdal_sieve <- paste(py.sieve,
-#                    "-st", 
-#                    10, -4, 
-#                    infile, 
-#                    "-of","GTiff",
-#                    outfile
-#                    )
-#
-#system(gdal_sieve)
-
-# # set up a sieve python command - NOTE Still not working  
-# saga_cmd = "saga_cmd"}  
-# 
-# gdal_sieve [-q] [-st threshold] [-4] [-8] [-o name=value]
-# srcfile [-nomask] [-mask filename] [-of format] [dstfile]
-# 
-# python3 -m 
-# gdal_sieve -st 10 -4 -of GTiff "crs=EPSG:3857&format&type=xyz&url=http://ecn.t3.tiles.virtualearth.net/tiles/a%7Bq%7D.jpeg?g%3D1&zmax=18&zmin=0" C:/Users/genperk/AppData/Local/Temp/processing_SOaSPr/77b725a00d4f44ffa9d85dbc4840e7a5/OUTPUT.tif
-# 
-# python3 -m gdal_sieve -st 250 -8 -of GTiff D:/PEM_DATA/BEC_DevExchange_Work/WilliamsLake_AOI/1_map_inputs/covariates/25m/bgc.tif D:/PEM_DATA/BEC_DevExchange_Work/WilliamsLake_AOI/0_raw_inputs/base_layers/raw/sieve.tif
-# 
-
-# infile <- "WilliamsLake_AOI/1_map_inputs/covariates/25m/bgc.tif"
-# outfile <- "WilliamsLake_AOI/1_map_inputs/covariates/25m/bgc_s.tif"
-# 
-# gdal_cmd 
-# 
-# 
-# sysCMD = paste(gdal_cmd , 
-#                "-st", 250,           # sieving
-#                -8,                  # connectedness
-#                "-of","GTiff", 
-#                mrv_file, mrv_s )
-# 
-# system(sysCMD)
-# sysCMD = paste("gdal_sieve", 
-#                "-st", 250,           # sieving
-#                -8,                  # connectedness
-#                "-of","GTiff", 
-#                infile, outfile )
-# 
-# system(sysCMD)
-# 
-# 
+sdat_to_tif(mrvbfile[1])
 
 
 
 # IN QGIS  sieve via QGIS gdal or can use below but suboptimal option
 
-# sieved threshold Date Creek - 250
+# sieved threshold Date Creek - 250, 100 
 # tick connectness = 8 
 # filename = mvvbf_LS_s.tif
 
@@ -314,9 +256,18 @@ outfile = mrv_s
 
 
 
+# sieve to 250 8 connected
 
+mrvbf <- list.files(file.path(saga_files), pattern = "mrvbf_LS_s.tif", full.names = TRUE)
+mrvbf <- raster(mrvbf)
 
+mrvbf <- crop(mrvbf, dem_template)
+# set threshold value
+threshold <- 0
 
+values(mrvbf )[values(mrvbf) < threshold] = NA
+
+writeRaster(mrvbf, file.path(saga_files, "mrvbf_LSs.tif"), driver = "GTiff", overwrite = TRUE)
 
 ##### >> 12 -- Diuranal Anisotropic Heating -----------------------------
 # http://www.saga-gis.org/saga_tool_doc/7.2.0/ta_morphometry_12.html
@@ -332,15 +283,15 @@ system(sysCMD)
 
 # convert to tif
 dahfile <- list.files(file.path(saga_files,"sagaTmp"), pattern = "dah.sdat", full.names = T)
-sdat_to_tif(dahfile)
+sdat_to_tif(dahfile[1])
 
 # reclass 
-
 dah <- list.files(file.path(saga_files), pattern = "dah.tif", full.names = TRUE)
 dah <- raster(dah)
 
 # set threshold value
 threshold <- 0.2
+#threshold <- 0.3 testing for SE 
 
 # Build a reclass matrix for three group using (+/- threshold)
 # all values > 0 and <= 0.25 become 1, etc.
@@ -394,16 +345,13 @@ writeRaster(rc, file.path(saga_files, "dah_LS.tif"), driver = "GTiff", overwrite
 library(spatialEco)
 # note make sure your DEM does not contain data outside the AOI as this impacts the calculations
 
+
 DTM <- raster(file.path(saga_files,"dem.tif"))
-#DTM <- raster(file.path(trim_files,"dem.tif"))
+#DTM <- raster(file.path("E:/temp/PEM_DATA/BEC_DevExchange_Work/KIC_SE_AOI/1_map_inputs/covariates/test_dem.tif"))
 
 lfclass <- landfClass(DTM, scale = 75, sn = 3, ln = 7, n.classes = "six")
-
-# convert to classes based on the grouping 
-
 writeRaster(lfclass, file.path(saga_files, "landform_LS.tif"), overwrite = TRUE)
 
-# these last paramerts look good. 
 
 # IN QGIS  sieve via QGIS gdal or can use below but suboptimal option
 
@@ -413,10 +361,10 @@ writeRaster(lfclass, file.path(saga_files, "landform_LS.tif"), overwrite = TRUE)
 
 # we can reclass to remove the extreme values outside the AOI  
 
-lfclass <- list.files(file.path(saga_files), pattern = "landform_LSs.tif", full.names = TRUE )
+lfclass <- list.files(file.path(saga_files), pattern = "landform_LS_s.tif", full.names = TRUE)
 lfclass <- raster(lfclass)
 
-lfclass <- crop(lfclass, dah)
+lfclass <- crop(lfclass, dem_template)
 # set threshold value
 threshold <- 0
 
@@ -425,8 +373,13 @@ threshold <- 0
 
 values(lfclass)[values(lfclass) < threshold] = NA
 
-writeRaster(lfclass, file.path(saga_files, "lfclass_st.tif"), driver = "GTiff", overwrite = TRUE)
+writeRaster(lfclass, file.path(saga_files, "landform_LSs.tif"), driver = "GTiff", overwrite = TRUE)
 
+
+
+###################
+
+#Geology 
 
 
 
@@ -435,20 +388,87 @@ writeRaster(lfclass, file.path(saga_files, "lfclass_st.tif"), driver = "GTiff", 
 ## For the stage 1 sampling if needed crop to the Template size
 
 
-files_to_crop <- c("lfclass_st.tif", "dah_LS.tif", "mrvbf_LSs.tif")
+#files_to_crop <- c("lfclass_st.tif", "dah_LS.tif", "mrvbf_LSs.tif")
+files_to_crop <- c("dah_LS.tif", "mrvbf_LSs.tif", "landform_LSs.tif", "bgc.tif")
 
-dem_template
+
+rtemplate <- raster(file.path(saga_files,"template.tif"))
+#r1 <- raster(file.path(saga_files, "bgc.tif"))
+#r2 <- raster(file.path(saga_files, "dah_LS.tif"))
+#rtemplate = r2
+#extent(r1)
+#extent(r2)
 
 for (i in files_to_crop){
-        #i <- files_to_crop[1]
-        
-        trim_size <- raster(file.path(saga_files, i))
-        dem_size <- crop(trim_size, dem_template)
-        writeRaster(dem_size, file.path(saga_dir, i), format = "GTiff", overwrite = TRUE)
-        
-                }
+  #i <- files_to_crop[1]
+  outname <- gsub(".tif", "s.tif", i)
+  trim_size <- raster(file.path(saga_files, i))
+  dem_size <- crop(trim_size, rtemplate)
+  #ii <- "dah_LSs.tif"
+  writeRaster(dem_size, file.path(saga_files, outname), format = "GTiff", overwrite = TRUE)
+  
+  # often problem writting out landscape Lss
+  
+}
 
-        } else { # loop for landscape vs stand covariate generation 
+
+
+# Once you are done creating landscape level covars you need to check the prameters are correct
+## TESTING PORTION 
+## this should be made into a function .... still a work in progress
+
+
+# select the covars of interest along with the BEC zones 
+fileoi <- c("dah_LS.tif", "mrvbf_LSs.tif", "landform_LSs.tif")
+
+covariates <- list.files(saga_files,full.names = T)
+covariatesoi <- covariates[basename(covariates) %in% fileoi]
+ancDat <- raster::stack(covariatesoi)
+
+# find unique combinations and assign an id column
+combinations <- raster::unique(ancDat)
+comb.df <- as.data.frame(combinations) 
+comb.df <- na.omit(comb.df) # remove NA values 
+comb.df$id = seq(1,length(comb.df$dah_LS),1)
+ancDat.df <- as.data.frame(ancDat, xy = TRUE)
+anc_class <- left_join(ancDat.df, comb.df)
+
+# convert to raster
+r <- raster(nrow=nrow(ancDat), ncol=ncol(ancDat), ext=extent(ancDat), 
+            crs= 3005 )
+values(r) <- anc_class$id
+
+r <- extend(r, dem_template)
+# write out raster
+writeRaster(r, file.path(saga_files, "landscape_variable_validation.tiff" ), overwrite = TRUE)
+
+
+## assess the sample space using cost layer and covariates 
+## note to complete the analysis you will also need to run the cost layer script
+
+
+# get histograms per BGC 
+# stack the BGC along with the landscape variable validation classes
+fileoi <- c("bgc.tif", "landscape_variable_validation.tif")
+
+covariates <- list.files(saga_files,full.names = T)
+covariatesoi <- covariates[basename(covariates) %in% fileoi]
+ancDat <- raster::stack(covariatesoi)
+
+ancDat.df <- as.data.frame(ancDat)
+
+# select BGCs for SE KIC
+#ancDat.df <- ancDat.df %>% filter (bgc %in% c(20,4,21,16,23,14,26,10)) # SE
+#ancDat.df <- ancDat.df %>% filter(bgc %in% c(139, 103, 155, 163)) # SW
+ancDat.df <- ancDat.df %>% filter(bgc %in% c(157, 158, 83, 134, 148, 141)) # NE
+ancDat.df <- na.omit(ancDat.df)
+
+
+p1 <- ggplot(ancDat.df, aes(landscape_variable_validation)) + 
+  geom_histogram()+ 
+  facet_wrap(~bgc)
+
+p1
 
 
 ####################################################################################
@@ -490,16 +510,16 @@ system(sysCMD)
 # http://www.saga-gis.org/saga_tool_doc/7.2.0/ta_hydrology_0.html
 ## Note this is the same as flow Accumulation top down (#19 although less outputs included here that are included in #19
 
- tCatchment <- "tCatchment.sgrd"
- tCatchment = file.path(tmpOut, tCatchment)
- sysCMD <- paste(saga_cmd, "ta_hydrology 0", "-ELEVATION", 
-                 sDTM, 
-                 "-FLOW", tCatchment,                                    # Output
-                 "-METHOD", 4                                            # Default Parameters
- )
- system(sysCMD)
+tCatchment <- "tCatchment.sgrd"
+tCatchment = file.path(tmpOut, tCatchment)
+sysCMD <- paste(saga_cmd, "ta_hydrology 0", "-ELEVATION", 
+                sDTM, 
+                "-FLOW", tCatchment,                                    # Output
+                "-METHOD", 4                                            # Default Parameters
+)
+system(sysCMD)
 
- 
+
 #####################
 # Still to run - using tCatchement instead for the base tca raster for other inputs 
 # This is not working properly but is the equivalent to tca - needs more work 
@@ -664,31 +684,31 @@ sysCMD <- paste(saga_cmd, "ta_morphometry 8", "-DEM",
                 "-MAX_RES", 100
 )
 system(sysCMD)
- 
+
 # Test a Variety of paramter and method versions. 
 # tested a number of MRVBF options for the t-slope parameter #ie 
 # use dem_preproces for input and lowered the slope parameter from 15 to 10 
 #
- MRVBF2 <- "mrvbf2.sgrd"
- MRRTF2 <- "mrrtf2.sgrd"
- 
- MRVBF2 = file.path(tmpOut, MRVBF2)
- MRRTF2  = file.path(tmpOut, MRRTF2)
- 
- #  Adjust parameters -  Option 2. 
- sysCMD <- paste(saga_cmd, "ta_morphometry 8", "-DEM",
-                 sDTM,
-                 "-MRVBF", MRVBF2,
-                 "-MRRTF", MRRTF2,                       
-                 "-T_SLOPE", 10,
-                 "-T_PCTL_V", 0.4,
-                 "-T_PCTL_R", 0.35,    
-                 "-P_SLOPE", 4.0,
-                 "-P_PCTL", 3.0,
-                 "-UPDATE", 0,
-                 "-CLASSIFY", 0,
-                 "-MAX_RES", 100
- )
+MRVBF2 <- "mrvbf2.sgrd"
+MRRTF2 <- "mrrtf2.sgrd"
+
+MRVBF2 = file.path(tmpOut, MRVBF2)
+MRRTF2  = file.path(tmpOut, MRRTF2)
+
+#  Adjust parameters -  Option 2. 
+sysCMD <- paste(saga_cmd, "ta_morphometry 8", "-DEM",
+                sDTM,
+                "-MRVBF", MRVBF2,
+                "-MRRTF", MRRTF2,                       
+                "-T_SLOPE", 10,
+                "-T_PCTL_V", 0.4,
+                "-T_PCTL_R", 0.35,    
+                "-P_SLOPE", 4.0,
+                "-P_PCTL", 3.0,
+                "-UPDATE", 0,
+                "-CLASSIFY", 0,
+                "-MAX_RES", 100
+)
 system(sysCMD)
 
 
@@ -729,7 +749,7 @@ opos = file.path(tmpOut, opos)
 oneg <- "open_neg.sgrd"
 oneg = file.path(tmpOut, oneg)
 sysCMD <- paste(saga_cmd, "ta_lighting 5", "-DEM", 
-               sDTM,
+                sDTM,
                 "-POS", opos, 
                 "-NEG", oneg,                               # Outputs
                 "-RADIUS", 1000, 
@@ -748,7 +768,7 @@ tpi <- "tpi.sgrd"
 tpi= file.path(tmpOut, tpi)
 
 sysCMD <- paste(saga_cmd, "ta_morphometry 18", "-DEM", 
-               sDTM ,# Input DTM
+                sDTM ,# Input DTM
                 "-TPI", tpi,                                            # Output
                 "-STANDARD", 0, 
                 "-RADIUS_MIN", 0, 
@@ -833,7 +853,7 @@ sysCMD = paste(saga_cmd, "ta_hydrology 7",
                "-LENGTH", SlopeLength            # output Slope Length
 )
 system(sysCMD)
- 
+
 
 
 #### >> 18 -- Flow Accumulation (Parallelizable) ------------------- ## this tool doesn't seem to exist - SAGA version issue?
@@ -983,19 +1003,19 @@ sysCMD <- paste(saga_cmd, "ta_lighting 2",
                 "-GRD_DEM", sDTM ,# Input DTM
                 "-GRD_DIRECT", DirInsol, 
                 "-GRD_DIFFUS", DifInsol,       # Outputs
-                 "-SOLARCONST", 1367, 
-                 "-LOCALSVF", 1, 
-                 "-SHADOW", 0,     # Parameters
-                 "-LOCATION", 1, 
-                 "-PERIOD", 2, 
-                 "-DAY", "2018-02-15", 
-                 "-DAY_STOP", "2019-02-15", 
-                 "-DAYS_STEP", 30, 
-                 "-HOUR_RANGE_MIN", 4, 
-                 "-HOUR_RANGE_MAX", 22, 
-                 "-HOUR_STEP", 0.5, 
-                 "-METHOD", 2, 
-                  "-LUMPED", 70
+                "-SOLARCONST", 1367, 
+                "-LOCALSVF", 1, 
+                "-SHADOW", 0,     # Parameters
+                "-LOCATION", 1, 
+                "-PERIOD", 2, 
+                "-DAY", "2018-02-15", 
+                "-DAY_STOP", "2019-02-15", 
+                "-DAYS_STEP", 30, 
+                "-HOUR_RANGE_MIN", 4, 
+                "-HOUR_RANGE_MAX", 22, 
+                "-HOUR_STEP", 0.5, 
+                "-METHOD", 2, 
+                "-LUMPED", 70
 )
 system(sysCMD)
 
@@ -1275,7 +1295,7 @@ system(sysCMD)
 # system(sysCMD)
 # 
 
-        }
+}
 
 } # end of covar function creation
 
@@ -1287,7 +1307,7 @@ system(sysCMD)
 #create_covariates(saga_dir = "E:/transfer/software/saga-7.4.0_x64",
 #        saga_files = "E:/temp/PEM_DATA/BEC_DevExchange_Work/Baboon_AOI/1_map_inputs/covariates/25m",
 #        cov_type = "stand" )# alternative is landscape for sample planning
-        
+
 
 
 
@@ -1326,7 +1346,7 @@ rasterfiles <- list.files(file.path(saga_files,"sagaTmp"),pattern = ".sdat$", fu
 
 # write out to tif
 for(r in rasterfiles){ sdat_to_tif(r)} 
-        
+
 # check the stack works: 
 
 tiffiles <- list.files(file.path(saga_files), full.names = T,pattern = ".tif$")
@@ -1351,8 +1371,8 @@ template_folder <- "E:/temp/PEM_DATA/BEC_DevExchange_Work/Baboon_AOI/1_map_input
 
 
 cov_fineres_match(downscale_folder, template_folder)
-        
-        
+
+
 
 
 
@@ -1564,32 +1584,32 @@ cov.dir = "E:/temp/PEM_DATA/BEC_DevExchange_Work/Deception_AOI/1_map_inputs/cova
 rasterfiles <- list.files(cov.dir, full.names = TRUE)
 
 for (iii in 1:length(rasterfiles)){
-        
-        iii = 1
-        
-        orig_raster <- rasterfiles[iii] # 5
-        print (orig_raster)
-        orig_raster <- raster(orig_raster)
-        
-        outfile <- gsub("sdat", "tif", sagafile)
-        r <- readGDAL(file.path(saga_files,"sagaTmp",sagafile))
-        w <- file.path(saga_files, "outputs", outfile) #, sep = "")
-        writeGDAL(r, w)
-        
-        rfile <- raster(w)
-        
-        if(is.na(crs(rfile))) {
-                print("setting projection to 3005")
-                # ensure raster is in BC albers projection
-                PROJ <- crs(paste("+init=epsg:",3005, sep = "")) 
-                crs(rfile) <- PROJ 
-                
-        } else {
-                print("projection already set to 3005")
-        }
-        
-        w_out <- writeRaster(rfile, file.path(saga_files, basename(w)), overwrite = TRUE, driver = "GTiff")
-        
+  
+  iii = 1
+  
+  orig_raster <- rasterfiles[iii] # 5
+  print (orig_raster)
+  orig_raster <- raster(orig_raster)
+  
+  outfile <- gsub("sdat", "tif", sagafile)
+  r <- readGDAL(file.path(saga_files,"sagaTmp",sagafile))
+  w <- file.path(saga_files, "outputs", outfile) #, sep = "")
+  writeGDAL(r, w)
+  
+  rfile <- raster(w)
+  
+  if(is.na(crs(rfile))) {
+    print("setting projection to 3005")
+    # ensure raster is in BC albers projection
+    PROJ <- crs(paste("+init=epsg:",3005, sep = "")) 
+    crs(rfile) <- PROJ 
+    
+  } else {
+    print("projection already set to 3005")
+  }
+  
+  w_out <- writeRaster(rfile, file.path(saga_files, basename(w)), overwrite = TRUE, driver = "GTiff")
+  
 }
 
 

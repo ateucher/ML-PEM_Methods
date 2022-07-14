@@ -9,7 +9,6 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-
 ```{r packages, include=FALSE}
 
 #devtools::install_github("ColinChisholm/pemgeneratr")
@@ -61,14 +60,16 @@ This script downloads the relevant spatial data for BEC zones, VRI, TEM, waterbo
 ## Work-flow
 This script relies on having a spatial file (AOI.gpkg) defining the study area (area of interest - AOI). Firstly the area of interest is defined along with input and output folders. 
 
-
 ```{r Parameters}
 
 #AOI <- "Deception"
-AOI <- "KootInvCran"
-#AOI <- "KIC_SE_AOI"
+#AOI <- "KootInvCran"
+AOI <- "KIC_SE"
+#AOI <- "KIC_SW"
+#AOI <- "KIC_NW"
+#AOI <- "KIC_NE"
 
-AOI_dir <- file.path(".", paste0(AOI, "_AOI"))
+AOI_dir <- file.path(paste0("./",AOI, "_AOI"))
 raw_dir <- file.path(AOI_dir, "0_raw_inputs")
 derived_dir <- file.path(AOI_dir, "1_map_inputs")
 cov_dir <- file.path(AOI_dir, "1_map_inputs", "covariates")
@@ -80,14 +81,14 @@ source("./_functions/aoi_snap.R")
 
 ```
 
-
-
 # Create template AOIs for the analysis
 
 We will modify the aoi to ensure the area of interest can be easily stacked in future analysis. 
 
 ```{r}
-aoi_raw <- st_read(file.path(shape_dir, "aoi.gpkg"), quiet = TRUE)%>%
+epsg = 3005
+
+aoi_raw <- st_read(file.path(shape_dir, "aoi.gpkg"), quiet = TRUE) %>%
   st_zm() %>%
   st_transform(3005)
 
@@ -98,13 +99,12 @@ st_write(aoi, file.path(shape_dir, "aoi_snapped.gpkg"))
 
 ```
 
-
-Initially a single function is used to download BEC zone info, VRI shapes, TEM shapes (if applicable), water bodies, and roads all in one go. Each is clipped to the extent of the study area at each resolution, however with increasing size of study area this was converted to individual snippets/functions.  
+Initially a single function is used to download BEC zone info, VRI shapes, TEM shapes (if applicable), water bodies, and roads all in one go. Each is clipped to the extent of the study area at each resolution, however with increasing size of study area this was converted to individual snippets/functions. 
 
 ```{r Function}
 
   in_aoi <- st_read(file.path(shape_dir, "aoi_snapped.gpkg"))
-  epsg = 3005
+
   bec_dir <- file.path("_data_allBC", "BECv12.gpkg")
   
   # checks that everything is set correctly 
@@ -142,25 +142,25 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
   # Adjust max download size based on AOI
   options(bcdata.max_geom_pred_size = as.numeric(st_area(in_aoi)) + 10)
   
-  # Bec map - option 1) get Bec mapping from BCGW     
-  bec_sf <- bcmaps::bec(class = "sf", force = TRUE, ask = FALSE) %>% 
-        sf::st_set_agr("constant")
-      if(sf::st_crs(bec_sf) != sf::st_crs(in_aoi)) {
-        box_trans <- sf::st_as_sfc(box) %>% 
-          sf::st_buffer(10, nQuadSegs = 0) %>% 
-          sf::st_transform(sf::st_crs(bec_sf)) %>% 
-          sf::st_bbox()
-        bec_sf <- sf::st_crop(bec_sf, box_trans) %>% 
-          sf::st_transform(sf::st_crs(in_aoi)) %>% 
-          sf::st_set_agr("constant")
-      } 
+  # # Bec map - option 1) get Bec mapping from BCGW     
+  # bec_sf <- bcmaps::bec(class = "sf", force = TRUE, ask = FALSE) %>% 
+  #       sf::st_set_agr("constant")
+  #     if(sf::st_crs(bec_sf) != sf::st_crs(in_aoi)) {
+  #       box_trans <- sf::st_as_sfc(box) %>% 
+  #         sf::st_buffer(10, nQuadSegs = 0) %>% 
+  #         sf::st_transform(sf::st_crs(bec_sf)) %>% 
+  #         sf::st_bbox()
+  #       bec_sf <- sf::st_crop(bec_sf, box_trans) %>% 
+  #         sf::st_transform(sf::st_crs(in_aoi)) %>% 
+  #         sf::st_set_agr("constant")
+  #     } 
   
   # alternatively get more updated bec from another source: 
   bec_sf <- st_read(bec_dir)  
   bec_sf <- st_cast(bec_sf, "MULTIPOLYGON")
   bec_sf_clip <- sf::st_crop(bec_sf, box) 
   bec_sf <- st_intersection(aoi_raw, bec_sf_clip) %>%
-    dplyr::select(BGC_LABEL, geom)
+    dplyr::select(BGC_LABEL)
   
   st_write(bec_sf, file.path(out_path, "bec.gpkg"), delete_dsn = TRUE, 
            delete_layer = TRUE)
@@ -174,9 +174,7 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
   
   st_write(vri, file.path(out_path, "vri.gpkg"), delete_dsn = TRUE,
            delete_layer = TRUE)
-  
-  #st_write(vri, "vri.gpkg", delete_dsn = TRUE,
-  #         delete_layer = TRUE)
+
   
 # post process VRI data into classes: 
 # Depending on the study area we want to focus on sampling in older areas - class 4 (60-80) or 5 (80 + )
@@ -184,8 +182,8 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
   # class 1 and 2 (0 - 40 yrs)
   # class 1-3 (0 - 60 years)
 
-  #vri <- st_read(file.path(out_path, "vri.gpkg")) %>%
-  #  dplyr::select(c("BCLCS_LEVEL_2","BCLCS_LEVEL_4","PROJ_AGE_CLASS_CD_1", "SPECIES_CD_1"))
+#  vri <- st_read(file.path(out_path, "vri.gpkg")) %>%
+#    dplyr::select(c("BCLCS_LEVEL_2","BCLCS_LEVEL_4","PROJ_AGE_CLASS_CD_1", "SPECIES_CD_1"))
   
   vri_class2 <- vri %>%
     dplyr::mutate(age_class = as.numeric(PROJ_AGE_CLASS_CD_1)) %>%
@@ -204,9 +202,11 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
   
   # STILL TO DO - for areas with deciduous leading (AT, EP) Aspen and paper burch these should be seperated using the code "SPECIES_CD_1" == AT|EP. 
   # ie important in Date Creek 
-   vri_decid <- vri %>%
-     dplyr::filter(SPECIES_CD_1 = "AT|EP" ) # note might need to adjust for some areas of interest
-   st_write(vri_decid, file.path(out_path, "vri_decid.gpkg"))
+   
+  vri_decid <- vri %>%
+     dplyr::filter(SPECIES_CD_1 %in% c("AT","EP")) # note might need to adjust for some areas of interest
+  
+    st_write(vri_decid, file.path(out_path, "vri_decid.gpkg"))
    
 ######### end of test section   
    
@@ -238,13 +238,15 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
    
    st_write(ften, file.path(out_path, "ften.gpkg"), delete_dsn = TRUE,
             delete_layer = TRUE)
+   
   
   # cutblocks.gpkg"))
   cutblocks <- st_read(file.path(out_path, "cutblocks.gpkg")) # cutblocks.gpkg"))
   ften <- st_read(file.path(out_path, "ften.gpkg")) # cutblocks.gpkg"))
   cutblocks_ften <- bind_rows(cutblocks, ften)
   cutblocks_ften <- bind_rows( ften, cutblocks)
-    st_write(cutblocks_ften, file.path(out_path, "cutblocks_ften.gpkg"))
+  st_write(cutblocks_ften, file.path(out_path, "cutblocks_ften.gpkg"),delete_dsn = TRUE,
+            delete_layer = TRUE)
   
   # TEM
   tem <- bcdc_query_geodata("0a83163b-a62f-4ce6-a9a1-21c228b0c0a3", crs = epsg) %>%
@@ -318,7 +320,19 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
   
   
   roads <- st_read(file.path(out_path, "road_surroundings.gpkg"))
+  names(roads)
+ 
   roads_vet <- st_read(file.path(out_path, "roads_vetted.gpkg"))
+  
+  # roads_vet <- st_read(file.path(out_path, "raw","SE_roads_to_add2.gpkg"))
+  # #names(roads_vet)
+  # roads_vet <- roads_vet %>% select(c(ROAD_SURFA, ROAD_CLASS)) %>% 
+  #   mutate(ROAD_SURFA = "rough", 
+  #          ROAD_CLASS = "resource")
+  # 
+  #   roads_vet <- bind_rows(roads, roads_vet)
+  # st_write(roads_vet, file.path(out_path, "road_surroundingsV2.gpkg"))
+
   
   roads_vet <- bind_rows(roads, roads_vet)
   st_write(roads_vet, file.path(out_path, "road_vetted.gpkg"))
@@ -371,8 +385,8 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
            delete_layer = TRUE)
 
   # BC parks 
-  bcdc_search("parks and protected area")
-  bcdc_search("1130248f-f1a3-4956-8b2e-38d29d3e4af7")
+  #bcdc_search("parks and protected area")
+  #bcdc_search("1130248f-f1a3-4956-8b2e-38d29d3e4af7")
   
     parks <- bcdc_query_geodata("1130248f-f1a3-4956-8b2e-38d29d3e4af7",crs = epsg) %>% 
     bcdata::filter(INTERSECTS(aoi_raw)) %>% 
@@ -388,7 +402,37 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
   
    st_write(national_parks, file.path(out_path, "natparks.gpkg"), delete_dsn = TRUE, 
            delete_layer = TRUE)
- 
+   
+  # transmission lines
+  #bcdc_search("transmission")
+   trans_line <-  bcdc_query_geodata("384d551b-dee1-4df8-8148-b3fcf865096a",crs = epsg) %>% 
+    bcdata::filter(INTERSECTS(aoi_raw)) %>% 
+    collect()
+   
+  st_write(trans_line, file.path(out_path, "translines.gpkg"), delete_dsn = TRUE, 
+           delete_layer = TRUE)
+
+
+  ## STILL A WORK IN PROGRESS
+   
+   # sedimentary layer. Currently testing this as part of KIC study area for an additional landscape scale analysis 
+   
+   
+     # alternatively get more updated bec from another source: 
+  geo_dir <- file.path("_data_allBC", "BC_digital_geology_gpkg","BC_digital_geology.gpkg")
+  geo_sf <- st_read(geo_dir,  layer = "Bedrock_ll83_poly")
+  geo_sf <- st_cast(geo_sf, "MULTIPOLYGON") %>%
+    dplyr::select("upid","rock_class" )
+  geo_sf <- sf::st_transform(geo_sf, sf::st_crs(in_aoi)) #%>% 
+          #sf::st_set_agr("constant")
+  geo_sf_clip <- sf::st_crop(geo_sf, box) 
+  geo_sf <- st_intersection(aoi_raw, geo_sf_clip) %>%
+    dplyr::select(rock_class, geom)
+  
+  st_write(geo_sf, file.path(out_path, "geo.gpkg"), delete_dsn = TRUE, 
+           delete_layer = TRUE)
+
+   
 ```
 
 ```{r}
@@ -399,10 +443,11 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
 # As landownership needs to be downloaded separately we need to filter this for private ownership (remove anything except None or unknown)
 
 #landownreship <- st_read(file.path(out_path, "raw", "dc_landownership.shp")) %>%
-landownreship <- st_read(file.path(out_path, "raw", "private.shp")) %>%
+landownreship <- st_read(file.path(out_path, "raw", "parcels_se.gpkg")) %>%
 #landownreship <- st_read(file.path(out_path, "raw", "wl_cadastre_parcel.shp")) %>%
   st_zm %>%
-  filter(OWNER_TYPE %in% c("Private", "Crown Provincial" , "Federal",
+  dplyr::select(OWNER_TYPE)%>%
+  dplyr::filter(OWNER_TYPE %in% c("Private", "Crown Provincial" , "Federal",
                            "Municipal" , "First Nations","Crown Agency",
                            "Mixed Ownership"))
  
@@ -422,7 +467,6 @@ st_write(landownreship, file.path(out_path, "private.gpkg"))
 # st_write( bc_boundary, file.path(out_path, "fire_int.gpkg"), delete_dsn = TRUE, 
 #           delete_layer = TRUE)
 
- 
 # Regional Distribt for BC 
 try(
   bcdc_get_record("https://catalogue.data.gov.bc.ca/dataset/regional-districts-legally-defined-administrative-areas-of-bc")

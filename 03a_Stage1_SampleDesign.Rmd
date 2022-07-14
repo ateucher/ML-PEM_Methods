@@ -17,6 +17,7 @@ require(knitr)
 
 
 ```{r setup, include=FALSE}
+rm(list = ls())
 
 library(raster)
 library(sf)
@@ -27,7 +28,6 @@ library(LearnGeom)
 library(stars)
 library(plyr)
 library(data.table)
-
 library(reticulate)
 #devtools::install_github("kdaust/clhs") 
 #devtools::install_github ("pierreroudier/clhs") 
@@ -105,7 +105,10 @@ Buffered clearcuts are now assigned a high cost to limit the number of transects
 ```{r setup user directories}
 # input parameters
 
-AOI <- "Deception"
+#AOI <- "KIC_SE"
+#AOI <- "KIC_SW"
+AOI <- "KIC_NE"
+#AOI <- "Deception"
 #AOI <- "BoundaryTSA"
 #AOI <- "DateCreek"
 #AOI <- "WilliamsLake"
@@ -117,14 +120,26 @@ AOI <- "Deception"
 
 map_res <- 25 # Defines resolution of map to use for cLHS
 transect_length <- 250 # Define the length of triangle on each side
+use_trim = TRUE
+
 
 use_heli <- FALSE # Determines whether there are helicopter accessible points that can be used for sampling. 
 
 map_res_character <- paste0(map_res, "m")
 AOI.dir <- file.path(paste0(AOI, "_AOI"))
 shapes_path <- file.path(AOI.dir, "0_raw_inputs", "base_layers")
-raster_path <- file.path(AOI.dir, "1_map_inputs", "covariates", map_res_character)
-#raster_path <- file.path(AOI.dir, "1_map_inputs", "covariates", paste0(map_res_character, "_trim")) # williams Lake 
+
+
+if(use_trim == T){
+ 
+  print("using trim for DEM")
+  raster_path <- file.path(AOI.dir, "1_map_inputs", "covariates", paste0(map_res_character, "_trim")) 
+  
+  }else{
+
+  raster_path <- file.path(AOI.dir, "1_map_inputs", "covariates", map_res_character)
+}
+
 out_path <- file.path(AOI.dir, "2_sample_design", "stage1_StudyDesign")
 sampling_raw_folder <- file.path(out_path, "input_raster")
 clhs_outpath <- file.path(out_path, "clhs_sample_plans")
@@ -135,29 +150,20 @@ clhs_outpath <- file.path(out_path, "clhs_sample_plans")
 # baboon - Houston 
 # old fort - smithers
 
-nearest_town = "Smithers" 
+#nearest_town = "Cranbrook" #SE
+#nearest_town = "Creston"  #SW 1
+#nearest_town = "Nelson"   # SW2
+nearest_town = "Invermere" # NE
+#nearest_town = "Smithers" 
 #nearest_town = "Houston" 
 #nearest_town = "Kamloops"
 #nearest_town = "Hazelton"
-
-# if(AOI == "DateCreek") {
-#   
-#   nearest_town = "Hazelton" 
-# 
-#   } else if (AOI == "WilliamsLake") {
-#   
-#   nearest_town = "100 Mile House" 
-#   
-#   } else if(AOI == "BoundaryTSA"){
-#     nearest_town = "Grand Forks"
-# }
-
 
 # radius of exclusion around points to prevent overlap of secondary transects
 centroid_distance <- 400
 
 ## Gives the minimum distance cLHS points will be located
-rad_exclusion <- 1000
+rad_exclusion <- 1200
 #num_slices <- round(num_samples/slice_size)
 
 ```
@@ -185,21 +191,19 @@ if(file.exists(file.path(out_path, "input_raster", "acost.tif"))) {
   acost <- raster(file.path(out_path, "input_raster", "acost.tif"))
   sample_cost <-raster(file.path(out_path, "input_raster", "sample_cost.tif")) 
   # read in transition layer 
-  tr1 <- readRDS(file = file.path(out_path, "input_raster","transition_layer.rds"))
+ # tr1 <- readRDS(file = file.path(out_path, "input_raster","transition_layer.rds"))
 
-  
 } else {
 
 # read in dem for template raster
 alt <- raster(file.path(raster_path, "dem.tif")) #williams lake
 #alt <- raster(file.path(raster_path, "dem_ls.tif")) # Boundary 
-template <- raster(file.path(raster_path, "template.tif"))
-#template <- raster(file.path(raster_path, "aspect.tif"))  
 
+template <- raster(file.path(raster_path, "template.tif"))
 
 ## read in roads and assign cost per road type
-roads <- st_read(file.path(shapes_path, "road_surroundings.gpkg")) %>% # Boundary
-   st_zm()
+roads <- st_read(file.path(shapes_path, "road_surroundings.gpkg")) #%>%  Boundary
+#   st_zm()
 
 roads$ROAD_CLASS[roads$trail == 1] <- "trail"
 roads <- roads[,c("ROAD_SURFA","ROAD_CLASS", "ROAD_NAM_7")]
@@ -209,22 +213,38 @@ roads <- roads %>% dplyr::rename('road_surface' = ROAD_CLASS,
                                    'name' = "ROAD_NAM_7")
 rdsAll <- as.data.table(roads) %>% st_as_sf()
   
-# assign speed codes
+# assign speed codes:
+
 rSpd <- tibble(
     "road_surface" = c("resource", "unclassified", "recreation", "trail", "local", "collector", "highway", "service", "arterial", "freeway", "strata", "lane", "private", "yield", "ramp", "restricted", "water", "ferry"),
-    "speed" = c(30, 30, 50, 4.5, 50, 80, 80, 50, 80, 80, 30, 30, 4.5, 30, 60, 4.5, 0.1, 0.1))
-  
-rSpd <- as.data.table(rSpd)
+    #"speed" = c(30, 30, 50, 4.5, 50, 80, 80, 50, 80, 80, 30, 30, 4.5, 30, 60, 4.5, 0.1, 0.1))
+     "speed" = c(3000, 3000, 5000, 4.5, 5000, 8000, 8000, 50, 8000, 8000, 3000, 3000, 4.5, 3000, 6000, 4.5, 0.1, 0.1))  
+
+# convert speed to pace
+rSpd <- as.data.table(rSpd) %>% mutate(pace = 1.5*(1/speed)) %>% select(-speed) # km/h to minutes per 25m pixal
 rdsAll <- merge(rdsAll, rSpd, by = "road_surface", all = F)
-rdsAll <- rdsAll[,"speed"]
-allRast <- raster(rdsAll, resolution = 25)
-  
+rdsAll <- rdsAll[,"pace"]
+#rdsAll <- rdsAll[,"speed"]
+
+#sf::sf_use_s2(FALSE)
+
+#allRast <- raster(rdsAll, resolution = 25) #or 
+#allRast_c <- crop(allRast, template)
+
+#rr <- head(rdsAll)
+#rrs <- rasterize(rr, template)
+
+allRast <- rasterize(rdsAll, template) # very slow but correctly aligns
+extent(allRast)
+
 # create a roads raster (buffered)
 rdsAll <- st_buffer(rdsAll, dist = 25, endCapStyle = "SQUARE", joinStyle = "MITRE")
 rdsAll <- st_cast(rdsAll, "MULTIPOLYGON")
-rdsRast = fasterize(rdsAll, allRast, field = "speed")
+rdsRast = fasterize(rdsAll, allRast, field = "pace")
 
-## prep dem for transtion layer             
+rm(allRast)
+
+## prep dem for transition layer             
 ## read in water layer and convert to raster, convert water to 0 in altitude layer
 ## this will ensure movement is not allowed over water objects(river,lakes) 
 
@@ -237,75 +257,166 @@ water <- st_read(file.path(shapes_path, "water.gpkg")) %>%
 water_r <- fasterize(water, alt, field = "cost")
 alt[water_r] <- 0
 
+rm(water_r)
+
 #writeRaster(alt, file.path(out_path,"input_raster", "alt.tif"), format = "GTiff", overwrite = TRUE) 
 
 # align the dem and merge to full size of raster (extend past AOI to include roads)
-alt2 <- projectRaster(alt, rdsRast, method = 'ngb')
-altAll <- merge(rdsRast, alt2)
+#alt <- projectRaster(alt, rdsRast, method = 'ngb')
+# might not need this one...
 
-# set the threshold in which to determine the slope calculations vs road travel calculation in the transition layer. This may need to be adjusted depedning on terrain. 
+slope <- terra::terrain(alt, v = "slope", neighbors = 8, unit = "radians") # convert these radians to rise/run in next line
 
-alt.threshold <- 250 # Date Creek 
-  
-trFn <- function(x){
-    if(x[1] > alt.threshold & x[2] > alt.threshold){
-      x[1]-x[2]
-    }else{
-      min(x[1],x[2])
-    }
-}
+alt <- (3/5) * 6*exp(-3.5*abs(tan(slope) + 0.05)) * (40/60)## this converts km/hr to minutes/25m pixel
+# 40 x 25 = 1lm / 60 minutes from hours
+alt4 <- 1/alt %>% round(3)
+altAll <- merge(rdsRast, alt4)
 
-# identify the areas treated as road and those to be calculatd for slope
-rdIdx <- which(values(altAll) < 100)            # road index
-slpIdx <- which(values(altAll) > alt.threshold) # slope index
-#rdAdj <- adjacent(altAll, cells = rdIdx, pairs = T, directions = 8)
-adj <- adjacent(altAll, cells = slpIdx, pairs = T, directions = 8)
-adj <- adj[!adj[,1] %in% rdIdx ,]
-adj <- adj[!adj[,2] %in% rdIdx ,]
-    
-# calculate the altitude difference
-tr <- transition(altAll, trFn , directions = 8, symm = F) ##altDiff and speed (km/h)
-#convert to slope  i.e. altitude diff / distance travelled
-tr1 <- geoCorrection(tr) ##divided by 25 - slope and conductance (km/h/m)
-    
-#plot(raster(tr1))
-    
-# apply Toblers hiking function to the slope areas 
-tr1[adj] <- (3/5)*(6*exp(-3.5*abs(tr1[adj] + 0.08))) ##tobler's hiking function * 3/5 - gives km/h
-tr1 <- tr1*1000 ##now roads are correct conductance (h/m), and walking in m/h
-tr2 <- geoCorrection(tr1) ##have to geocorrect this part again
-tr1[adj] <- tr2[adj] ##tr1 values are now all conductance in h/metre
- 
+#write out to look at pace
+rm(alt4)
+rm(slope)
+rm(rrs)
+gc()
+
+#writeRaster(altAll, "./test_new", format = "GTiff", overwrite = TRUE)
+ # create  transition layer
+tr <- transition(altAll, transitionFunction = function(x) 1/mean(x), directions = 8, symm = F) 
+
+#saveRDS(tr, file.path(out_path,"input_raster", "transition_layer.rds"))
+#tr <- readRDS(file.path(out_path,"input_raster", "transition_layer.rds"))
+
+
+#rm(alt)
+rm(altAll)
+rm(rdsAll)
+rm(rdsRast)
+rm(alt)
+gc()
+
+tr1 <- geoCorrection(tr)
+
+rm(tr)
+gc()
+
 #plot(raster(tr1))
 # output transition layer to use in creating TSP paths
+
 saveRDS(tr1, file.path(out_path,"input_raster", "transition_layer.rds"))
-   
+#tr1 <- readRDS(file.path(out_path,"input_raster", "transition_layer.rds"))
+#tr1 = tr
 
-#nearest_town <- "Houston" 
-
+# get start community
 if(AOI == "BoundaryTSA") {
 # Shift the location of  Grand forks to align with roads 
 my.df <- read.table(text=" x    y
-                    1553304    475488", header = TRUE)
+                       1740089    553458", header = TRUE)
+# 1553304    475488", header = TRUE)
+
 start <- st_as_sf(my.df, coords = c("x","y"),
                   crs = 3005) %>%
   as("Spatial")
 
 } else {
-# Boundary towns - Grand Forks, Midway, Greenwood    
-cities <- st_read(file.path(shapes_path, "major_towns.gpkg"))
+
+cities <- st_read(file.path(shapes_path, "major_towns_bc.gpkg"))
 start <- cities[cities$NAME == nearest_town,"NAME"]%>% 
     as("Spatial")
 
-}
+} 
+
+acost <- accCost(tr1,start)
 
 # calculate the cost layer for travel  
-acost <- accCost(tr1, start)
 plot(acost)
-acost[acost >3000]<- NA
+#acost[acost >3000]<- NA
+
+
 
 writeRaster(acost, file.path(out_path,"input_raster", "acost.tif"), format = "GTiff", overwrite = TRUE)
-  
+
+rm(tr1)
+
+gc()
+
+
+## Quick fix for when there are two start points (used in SW KIC)
+
+# writeRaster(acost, file.path(out_path,"input_raster", "acost_nelson.tif"), format = "GTiff", overwrite = TRUE)
+# writeRaster(acost, file.path(out_path,"input_raster", "acost_creston.tif"), format = "GTiff", overwrite = TRUE)
+# 
+# acost1 <- raster(file.path(out_path,"input_raster", "acost_creston.tif"))
+# acost2 <- raster(file.path(out_path,"input_raster", "acost_nelson.tif"))
+# 
+# rs <- stack(acost1, acost2)
+# #rst <- terra::rast(rs)
+# #cost_min <- terra::app(rst, min)
+# 
+# xn <- min(rs, na.rm=TRUE)
+# writeRaster(xn, file.path(out_path,"input_raster", "acost.tif"), format = "GTiff", overwrite = TRUE)
+# 
+#  
+# rm(tr1)
+# gc()
+
+
+
+# check the cost per BCG and if the sampling within the landscape variation bins. 
+
+## assess the sample space using cost layer and covariates 
+# get histograms per BGC 
+
+
+# get histograms per BGC 
+# stack the BGC along with the landscape variable validation classes
+
+
+fileoi <- c("bgc.tif", "landscape_variable_validation.tif", "acost.tif")#, 
+
+covariates <- list.files( raster_path,full.names = T)
+covariatesoi <- covariates[basename(covariates) %in% fileoi]
+ancDat <- raster::stack(covariatesoi)
+
+ancDat.df <- as.data.frame(ancDat, xy = TRUE)
+
+# select BGCs for SE KIC
+#ancDat.df <- as_tibble(ancDat.df) %>% filter (bgc %in% c(20,4,21,16,23,14,26,10)) 
+
+# select BGCs for SW KIC
+#ancDat.df <- as_tibble(ancDat.df) %>% filter (bgc %in% c(143,103, 155, 163, 139)) #,4,21,16,23,14,26,10))
+
+# select BGCs for NE KIC
+ancDat.df <- as_tibble(ancDat.df) %>% filter (bgc %in% c(157,158, 83, 134, 148,141)) 
+
+
+all2 <- na.omit(ancDat.df)
+all2 <- all2 %>% select(-c(x, y))
+
+names(all2) <- c("acost", "bgc", "landscape_variable_validation")
+# output transition layer to use in creating TSP paths
+#saveRDS(all2, file.path(out_path,"input_raster", "sample_covar_cost_matrix.rds"))
+
+all3 <- all2 %>% 
+  mutate(acost_code = case_when(
+    acost < 250 ~ "low",
+    acost > 250 & acost < 500 ~ "moderate",
+    acost > 500 & acost < 800 ~ "high",
+    acost > 800 & acost < 1000 ~ "very high",
+    acost > 1000 ~ "prohibative",
+    TRUE ~ as.character("unknown")
+    
+  ))
+
+p3 <- ggplot(all3, aes(landscape_variable_validation, fill = acost_code)) + 
+        geom_histogram(bins = 30)
+
+
+p2 <- ggplot(all3, aes(landscape_variable_validation, fill = acost_code)) + 
+        geom_histogram()+ 
+        facet_wrap(~bgc)
+
+
+
+
 # Generate a sampling cost layer
 
 # Assigned the high costs to cutblocks, private land class 1-3, fire /fire intensity. This maintains the aras within the clhs sample area, but will deter the samples from being placed in these areas. 
@@ -357,8 +468,6 @@ cutblock_prep <- st_read(file.path(shapes_path,
  forest_exclude <- merge(forest_exclude, vri_decid_r)
  
  
- 
- 
 # 4. Assign high cost to private lands 
  private <- st_read(file.path(shapes_path, "private.gpkg")) %>%
    st_set_crs(3005) %>%
@@ -392,10 +501,24 @@ fires <- st_read(file.path(shapes_path, "fire_int.gpkg")) %>%
 fires_r <- fasterize(fires, acost, field = "cost")
 sample_cost <- merge(fires_r, sample_cost)
 
+
+# 5. Assign high cost to transmission lines
+ translines <- st_read(file.path(shapes_path, "translines.gpkg")) %>%
+   st_set_crs(3005) %>%
+   mutate(cost = 3000) %>%
+   dplyr::select(cost) %>%
+   st_buffer(dist = 150) %>%
+   st_cast("MULTIPOLYGON")
+ 
+ translines_r <- fasterize(translines, acost, field = "cost")
+ sample_cost <- merge(translines_r, sample_cost)
+
 # Add high costs to the existing travel cost layer and assign NA above (to remove extreme outliers outside the AOI) 
-sample_cost[sample_cost >3000]<- NA
+#sample_cost[sample_cost >3000]<- NA
  
 writeRaster(sample_cost, file.path(out_path, "input_raster","sample_cost.tif"), format = "GTiff", overwrite = TRUE)
+
+#sample_cost <- raster(file.path(out_path, "input_raster","sample_cost.tif"))
 
 }
 
@@ -414,8 +537,8 @@ These variables are largely uncorrelated with each other. Topographic Wetness wa
 ```{r Create BaseLayer stack, echo=F}
 # read in and stack landscape scale covariates 
   
-  anc_layers <- c("dah_3class.tif", "mrvbf_LS_s.tif", "landform_stt.tif") 
-  #anc_layers <- c( "dah_LS.tif", "mrvbf_LSs.tif","lfclass_st.tif")
+  #anc_layers <- c("dah_3class.tif", "mrvbf_LS_s.tif", "landform_stt.tif") 
+  anc_layers <- c( "dah_LS.tif", "mrvbf_LSs.tif","landform_Lss.tif")
   layerNames <- c("DAH","MRVBF","LFC") 
 
   covars <- file.path(raster_path, anc_layers)
@@ -439,20 +562,26 @@ water_buff <- st_buffer(water, dist = 150) # lakes
 
 roads <- st_read(file.path(shapes_path, "roads_vetted.gpkg")) %>%
   st_transform(3005)
-roads_buff <- st_buffer(roads, dist = 175) # roads
+#roads_buff <- st_buffer(roads, dist = 175) # roads
+
+#roads2 <- st_read(file.path(shapes_path, "roads_paved.gpkg")) %>%
 roads2 <- st_read(file.path(shapes_path, "road_surroundings.gpkg")) %>%
   st_transform(3005)
 roads1 <- bind_rows(roads, roads2)
 roads_buff <- st_buffer(roads1, dist = 175) # roads
 
-# create accumulated sample cost mask 
+# create accumulated sample cost mask # slow with large areas
 sample_cost_masked <- mask(sample_cost, roads_buff, inverse = TRUE) %>% 
   mask(water_buff, inverse = TRUE)
+
+writeRaster(sample_cost_masked, file.path(out_path, "input_raster","sample_cost_masked.tif"), format = "GTiff", overwrite = TRUE)
 
 # match to orginal extent of acost
 sample_cost_masked <- crop(sample_cost_masked, ancDat)
 sample_cost_masked = resample(sample_cost_masked, ancDat, "bilinear")
+writeRaster(sample_cost_masked, file.path(out_path, "input_raster","sample_cost_masked.tif"), format = "GTiff", overwrite = TRUE)
 
+sample_cost_masked <- raster(file.path(out_path, "input_raster","sample_cost_masked.tif"))
 ## Add the specific bgc mask and generate per BGC 
 
 #boi <- c("IDF xh 2", "IDF dk 1") # peterHope
@@ -461,9 +590,15 @@ sample_cost_masked = resample(sample_cost_masked, ancDat, "bilinear")
 #boi <- c("SBS mc 2") # oldfort # baboon
 #boi <- c ("ICHmw5", "ESSFmh", "MSdm1", "IDFdm1") # Boundary 
 #boi <- c ("SBSmc2", "ESSFmcw", "ESSFmc") # Deception 
-boi <- c ("ICH mc 2", "ICH mc 1", "ESSFwv") # Date Creek
+#boi <- c ("ICH mc 2", "ICH mc 1", "ESSFwv") # Date Creek
 #boi <- c ("IDF dk 3", "IDF xw", "MS  xk 2") # Williams Lake
 #boi <- c ("ESSFdc 1", "ICH dw 1", "ICH mk 1","IDF dh","ESSFdc 2", "ICH xw","ICH xw  a") # Boundary
+#boi <- c("IDF dm 2", "IDF xx 2") # SE KIC
+
+boi <- c("ESSFdk 1","ESSFwm 4", "ESSFwm 1") # KIC_SE
+#boi <- c("ICH xw", "ICH mw 4", "ICH dw 1","ESSFwh 3", "ESSFwm 3") # KIC_SW
+boi <- c("ESSFmm 3","ICH mk 5", "MS  dk","ESSFdk 2","IDF dk 5","IDF xk") # KIC_NE
+
 
 for (b in boi) {
   #b = boi[1]
@@ -482,7 +617,6 @@ for (b in boi) {
   
   # write out the exclusion mask 
   writeRaster(boi_mask, file.path(out_path, "input_raster", paste0(b,"_exclude_mask.tiff")), overwrite = TRUE)  
-  
   
   # write out polygon version for faster processing 
    
@@ -515,6 +649,11 @@ Additional new cLHS slices can be created after the generation of the original r
 clhs_outpath <- file.path(out_path, "clhs_sample_plans")
 ifelse(!dir.exists(clhs_outpath), dir.create(clhs_outpath, recursive = TRUE), FALSE)
 
+#boi <- c("IDF dm 2", "IDF xx 2", "MS  dw", "ICH mk 4","ICH dm","ESSFdk 1","ESSFwm 4", "ESSFwm 1") # KIC_SE
+#boi <- c("ICH xw", "ICH mw 4", "ICH dw 1","ESSFwh 3", "ESSFwm 3") # KIC_SW
+#boi <- c("ESSFmm 3","ICH mk 5", "MS  dk","ESSFdk 2","IDF dk 5","IDF xk") # KIC_NE
+boi <- c("ESSFmm 3", "ESSFdk 2")
+
 #boi <- c ("ICH mc 2", "ICH mc 1")# "ESSFwv") # Date Creek
 #boi <- "ESSFwv"
 #boi <- c("ESSFdc 1",  "ICH dw 1",  "ICH mk 1") # 15 sites - Greenwood/Grandforks
@@ -522,10 +661,14 @@ ifelse(!dir.exists(clhs_outpath), dir.create(clhs_outpath, recursive = TRUE), FA
 #boi <- "ESSFdc 2"                              # 10  - Oliver
 #boi <- "IDF dh"                                # 10  - Grandforks
 
-#boi <- "ICH xw_total"
+#boi <- "IDF dm 2"  # 25 sites 
+#boi <- "IDF xx 2"   # 15 sites 
+
+#boi <- "ICH mk 4"
+#boi <- "ICH dm"
 
 for (b in boi) {
- # b <- boi[3]
+  #b <- boi[1]
   
   boi_mask <- raster(file.path(out_path, "input_raster", paste0(b,"_exclude_mask.tif"))) 
   names(boi_mask) = "cost"
@@ -535,12 +678,12 @@ for (b in boi) {
 
   for(rot in 1:10){
     
- # rot <- 1
+  #rot <- 1
 
   # generate clhs points
   paired_distance <- 100
-  num_samples <- 5
-  slice_size <- 5
+  num_samples <- 25   # total no of samples wanted
+  slice_size <- 5     # SIZE OF THE  slice (ie 5 = size sites per slice)
   rerun <- 0
   num_slices <- round(num_samples/slice_size)
   # 
@@ -946,8 +1089,6 @@ st_write(p2, dsn = file.path(out_path, "TSP_3.gpkg"),layer = "Points", append = 
 # Incorporating previously sampled site 
 
 Incorporating previous sampling plots or adjusting the slice if sites are unavailable. 
-
-
 ```{r}
 
 # read in sites that were previously sampled.  
@@ -1352,12 +1493,22 @@ Currently the second location is based on the least cost.
 
 ``` {r Paired Points, tidy = TRUE}
 # First, create 8 cardinal-ordinal points and mask
-boi <- c ("ICH mc 2", "ICH mc 1", "ESSFwv")  # Date Creek
+## boi <- c ("ICH mc 2", "ICH mc 1", "ESSFwv")  # Date Creek
 #boi <- c ("IDF dk 3", "IDF xw")#, "MS  xk 2") # Williams Lake
 #boi <- c("ESSFdc 1",  "ICH dw 1",  "ICH mk 1") # 15 sites - Greenwood/Grandforks
 #boi <- c("ICH xw", "ICH xw  a")                # 15 sites - Grandforks
 
+#boi <- "IDF dm 2"  # 25 sites 
+#boi <- "IDF xx 2"   # 15 sites 
+#boi <- "MS  dw"
+#boi <- "ICH dm"
+#boi <- "ICH mk 4"
+#boi <- c("ICH xw", "ICH mw 4", "ICH dw 1","ESSFwh 3", "ESSFwm 3") # KIC_SW
+boi <- "ESSFmm 3"
+#boi <- c("ICH mk 5", "MS  dk","IDF dk 5","IDF xk")
 
+#boi <- "IDF dk 5"
+#boi <- "IDF xk"
 #boi <- "SBS mc 2"
 #clhs_set <- "clhs_pts1_SBS mc 2.gpkg$" # Essfdc2
 #clhs_set <- "clhs_pts2_ESSFmc.gpkg$" # Essfdc2
@@ -1367,21 +1518,31 @@ boi <- c ("ICH mc 2", "ICH mc 1", "ESSFwv")  # Date Creek
 clhs_outpath <- file.path(out_path, "clhs_sample_plans")
 
 # date creek - sites after adding previous sites
-clhs_outpath = file.path(clhs_outpath, "update_previous_sites")
+#clhs_outpath = file.path(clhs_outpath, "update_previous_sites")
 #clhs_set <- "clhs_pts10_ESSFwv.gpkg$" # Essfdc2
-clhs_set <- "clhs_pts4_ICH mc 1.gpkg$" # Essfdc2
+#clhs_set <- "clhs_pts4_ICH mc 1.gpkg$" # Essfdc2
 #clhs_set <- "clhs_pts1_ICH mc 2.gpkg$" # Essfdc2
+#clhs_set <- "clhs_pts10_ESSFwv.gpkg$" # Essfdc2
+#clhs_set <- "clhs_pts1_IDF dm 2.gpkg$" # Essfdc2
+#clhs_set <- "clhs_pts2_IDF xx 2.gpkg$" # Essfdc2
+#clhs_set <- "clhs_pts8_MS  dw.gpkg$"
+#clhs_set <- "clhs_pts10_ICH dm.gpkg$"
+#clhs_set <- "clhs_pts4_ICH mk 4.gpkg$"
+#clhs_set <- "clhs_pts4_ESSFwm 3.gpkg$"
+#clhs_set <- "clhs_pts2_ESSFdk 1.gpkg$"
+#clhs_set <- "clhs_pts5_ICH mk 5.gpkg$"
+#clhs_set <- "clhs_pts9_MS  dk.gpkg$"
+#clhs_set <- "clhs_pts10_IDF dk 5.gpkg$"
+clhs_set <- "clhs_pts9_ESSFmm 3.gpkg$"
 
 
 #for (boi in b) # add iteration for the bgcs
-
-
 
 ff <- list.files(clhs_outpath, pattern = clhs_set, full.names = TRUE)
 
 #layers <- st_layers(ff)$name
 
-b = boi[2]
+b = boi[1]
 #sample_points <- st_read(ff, layer = b)
 
 sample_points <- st_read(ff)
@@ -1390,6 +1551,9 @@ sample_points <- st_read(ff)
 #scost <- as.data.frame(raster::extract(sample_cost, as(sample_points, "Spatial")))
 #names(scost) <- "scost"
 #sample_points$scost <- scost
+
+acost <- raster(file.path(out_path, "input_raster", "acost.tif"))
+sample_cost <- raster(file.path(out_path,"input_raster", "sample_cost.tif"))
 
 g <- sample_points
 name<- "geometry"
@@ -1443,6 +1607,7 @@ sample_points_rotations <- st_as_sf(sample_points_rotations, crs = 3005) %>%
   mutate(rotation = mapvalues(Rotation, rotation_angles, c("N", "NE", "SE", "W", "E", "NW", "SW", "S"))) %>%
   filter(!is.na(Rotation)) %>% 
   st_join(mask_poly, join = st_intersects) %>%
+  #st_join(acost, join = st_intersect)
   mutate(aoi = ifelse(is.na(cost), FALSE, TRUE))  %>%
   dplyr::select(-cost) %>%
   cbind(cost = raster::extract(sample_cost, .))
@@ -1572,7 +1737,7 @@ transect_out_path <- file.path(out_path, "transect_layout")
 ifelse(!dir.exists(transect_out_path), dir.create(transect_out_path, recursive = TRUE), FALSE)
 
 clhs_set
-outname = "s1_sampling_revised_new_only.gpkg"
+outname = "s1_sampling.gpkg"
 
 
 #####write Transects####################
@@ -1614,33 +1779,54 @@ st_write(sample_points_clhs, file.path(transect_out_path, outname), layer = past
 
 
 ## STILL TO FIX
+<<<<<<< HEAD
 
 # write out csv tracking sheet per bgc
-
+boi <- c("ICH mk 4", "IDF xx 2", "ESSFwm 1","IDF dm 2","ESSFdk 1", "ICH dm","ESSFwm 4", "MS  dw") # KIC_SE
 for (ii in 1:length(boi)) {
-  #ii = 1
+ # ii = 1
   b <- boi[ii]
   
   points <- st_read(file.path(transect_out_path, "s1_sampling.gpkg"), layer = paste0(b,"_points")) 
   b
   points.out <- points %>%
     cbind(st_coordinates(points)) %>% 
-    dplyr::select(id, rotation, X,Y) %>% 
+    dplyr::select(subzone,id, rotation, X,Y) %>% 
     st_drop_geometry() %>% 
     mutate(Surveyor = "", Date_Completed = "", Transect_comment = "") 
   
   write.csv(points.out, file.path(transect_out_path, paste0(b, "_tracking_sheet.csv")))
   
 }
+=======
+#boi <- c("ICH xw", "ICH mw 4", "ICH dw 1","ESSFwh 3", "ESSFwm 3") # KIC_SW
+# # write out csv tracking sheet per bgc
+# 
+# for (ii in 1:length(boi)) {
+#   #ii = 1
+#   b <- boi[ii]
+#   
+#   points <- st_read(file.path(transect_out_path, "s1_sampling.gpkg"), layer = paste0(b,"_points")) 
+#   b
+#   points.out <- points %>%
+#     cbind(st_coordinates(points)) %>% 
+#     dplyr::select(id, rotation, X,Y) %>% 
+#     st_drop_geometry() %>% 
+#     mutate(Surveyor = "", Date_Completed = "", Transect_comment = "") 
+#   
+#   write.csv(points.out, file.path(transect_out_path, paste0(b, "_tracking_sheet.csv")))
+#   
+# }
+>>>>>>> 586ffd87bcc2e1e9b583c5fe01813d36a81684d9
 
 
 # references
 
 #https://gis.stackexchange.com/questions/280593/understanding-the-values-from-transition-layers-produced-by-the-r-package-gdist
-
+```
 
 # quick fix to join the date creek new and old sites together 
-
+```{r}
 points <- st_read(file.path(transect_out_path, "s1_sampling_revised_new_only.gpkg")) 
 
 , layer = paste0(b,"_points")) 
@@ -1712,5 +1898,4 @@ st_write(transects_buffered, file.path(transect_out_path, outname), layer = past
 st_write(transects_all_buffered, file.path(transect_out_path, outname), layer = paste0(b,"_transects_all_buffered"), delete_layer = TRUE)
 
 } 
-
 
