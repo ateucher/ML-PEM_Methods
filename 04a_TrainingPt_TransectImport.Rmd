@@ -31,7 +31,7 @@ This script contains functionality for the import data collected by Avenza follo
 2. Converts data to vector triangles (using point to point at 2.5m resolution). Specifically this converts the points to lines (or track log to lines), add the field sample data as attributes to the line. 
 
 To run this script you will need:  
-- field data + tracks collected as .shp or .gpkg files. 
+- Field data + tracks collected as .shp or .gpkg files. 
 - Mapunit_Legend (csv file which will convert the codes to standard codes)
 - 
 
