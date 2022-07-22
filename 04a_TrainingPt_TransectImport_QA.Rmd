@@ -217,7 +217,7 @@ st_write(points_final, file.path(output_pnts_dir, "s1_pts_QA.gpkg"), delete_laye
 
 ```{r}
 
-# this might re quire prepocessing using the function "_standardie_avenza_input_field_names.R"
+# this might re quire prepocessing using the function "_standardise_avenza_input_field_names.R"
 
 points <- list.files(file.path(trans_data_cont), pattern = ".gpkg", full.names = TRUE)
 
@@ -397,6 +397,7 @@ subpts <- allpts %>%
   test.acc <- acc_metrix_QA(test.pred)
   
   test.acc
+  acc<- test.acc
   
   
   # target = unit
@@ -413,6 +414,8 @@ subpts <- allpts %>%
 
 
 
+  
+  
 
 trans_f<- all_trans %>%
   mutate(mapunit2 = ifelse(mapunit2 == "", NA, mapunit2),
