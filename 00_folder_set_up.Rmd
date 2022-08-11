@@ -12,7 +12,7 @@ knitr::opts_chunk$set(echo = TRUE)
 This script will generate the base folders required for the PEM project. 
 Run this script first, You will need to name the aoi only.
 
-Note when naming AOI avoid spaces, and use capitals to distinguish between names if desired. i.e DateCreek or WilliamsLake
+Note when naming AOI avoid spaces, and use capitals to distinguish between names if desired. i.e DateCreek or WilliamsLake or KootenayLake
 
 
 ```{r}
