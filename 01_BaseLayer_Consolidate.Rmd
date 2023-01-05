@@ -291,7 +291,7 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
   message("\rDownlomapading Road network")
   roads <- bcdc_query_geodata("bb060417-b6e6-4548-b837-f9060d94743e", crs = epsg) %>% 
     bcdata::filter(
-      BBOX(st_bbox(in_aoi), crs = paste0("EPSG:", epsg))) %>%#,
+      BBOX(local(st_bbox(in_aoi), crs = paste0("EPSG:", epsg)))) %>%#,
       #ROAD_NAME_ID > 0) %>% 
     collect() %>% 
     dplyr::select(id, ROAD_NAME_FULL, FEATURE_LENGTH_M) %>% 
@@ -303,7 +303,7 @@ Initially a single function is used to download BEC zone info, VRI shapes, TEM s
   
   fsr <- bcdc_query_geodata("9e5bfa62-2339-445e-bf67-81657180c682", crs = epsg) %>% 
     bcdata::filter(
-      BBOX(st_bbox(in_aoi), crs = paste0("EPSG:", epsg)), 
+      BBOX(local(st_bbox(in_aoi), crs = paste0("EPSG:", epsg))), 
       LIFE_CYCLE_STATUS_CODE == "ACTIVE") %>% 
     collect() %>% 
     dplyr::select(id, MAP_LABEL, FEATURE_LENGTH_M) %>% 
